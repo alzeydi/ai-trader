@@ -1,0 +1,23 @@
+Candidate signal:
+- symbol: {{ signal.symbol }}
+- side: {{ signal.side }}
+- type: {{ signal.type }}
+- entry: {{ '%.4f'|format(signal.entry) }}
+- stop: {{ '%.4f'|format(signal.stop) }}
+- take_profit: {{ '%.4f'|format(signal.take_profit) }}
+- risk_reward: {{ '%.2f'|format(signal.risk_reward()) }}
+- rule_confidence: {{ '%.2f'|format(signal.confidence) }}
+- rationale: {{ signal.rationale }}
+
+Market context:
+- last_price: {{ context.last_price }}
+- funding_rate: {{ context.funding_rate }}
+- open_interest: {{ context.open_interest }}
+- btc_dominance: {{ context.btc_dominance }}
+
+Recent equity:
+- balance_usdt: {{ equity.balance_usdt }}
+- open_positions: {{ equity.open_positions }}
+- consecutive_losses: {{ equity.consecutive_losses }}
+
+Decide: ALLOW or REJECT. Return strict JSON only.

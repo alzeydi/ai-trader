@@ -1,0 +1,29 @@
+# Trading universe for the agent.
+# `enabled: false` keeps a symbol loaded for context (e.g. BTC reference) but
+# excludes it from signal generation.
+
+symbols:
+  - symbol: BTC/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 1
+    quantity_precision: 3
+    is_reference: true   # used for BTC.D / regime detection
+
+  - symbol: ETH/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 3
+
+  - symbol: SOL/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: BNB/USDT:USDT
+    enabled: false
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2

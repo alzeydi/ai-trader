@@ -1,0 +1,1 @@
+"""ai-trader notify subpackage."""
