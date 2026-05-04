@@ -1,61 +1,230 @@
-"""Layer 1 — rule-based signal orchestrator.
+"""Layer 1 — multi-timeframe signal engine.
 
-Pulls multi-timeframe data, runs trend → structure → execution checks, and
-emits a `CandidateSignal` when all three align. The LLM veto layer (Layer 2)
-gets to approve/reject before anything is sized in Layer 3.
+Three signal types:
+  A — with-trend pullback (4h bullish/bearish + 1h near EMA50 + 15m reversal)
+  B — counter-trend extreme (4h RSI >75 or <25 + 15m reversal confirmation)
+  C — range fade (4h neutral + close near 1h swing boundary + 15m reversal)
+
+Public API:
+  SignalEngine.generate_signals(symbol) -> CandidateSignal | None
+  SignalEngine._evaluate(symbol, df_4h, df_1h, df_15m) -> CandidateSignal | None
+    (separated for testability with synthetic data)
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
-from src.config import settings
+import pandas as pd
+
 from src.data.binance_client import BinanceClient
-from src.data.indicators import atr14
-from src.signal.execution import find_trigger
-from src.signal.structure import find_structure
-from src.signal.trend import detect_bias
-from src.signal.types import CandidateSignal, Side, SignalType
+from src.data.indicators import atr14, ema, macd, rsi14, swing_high_low
+from src.signal.types import CandidateSignal
 
 log = logging.getLogger(__name__)
 
+_MIN_4H = 210   # need EMA200 warmup
+_MIN_1H = 55    # need EMA50 + swing lookback
+_MIN_15M = 35   # need ATR14 + MACD warmup + volume window
+
+
+# ── composite scorers ──────────────────────────────────────────────────────
+
+def _score_a(ema_gap_pct: float, rsi_delta: float, vol_ratio: float) -> float:
+    trend   = min(abs(ema_gap_pct) / 0.08, 1.0) * 0.40
+    rev     = min(abs(rsi_delta)   / 8.0,  1.0) * 0.35
+    volume  = min(max(vol_ratio - 1.0, 0.0) / 1.0, 1.0) * 0.25
+    return round(min(trend + rev + volume, 0.99), 4)
+
+
+def _score_b(rsi_4h: float, side: str, hist_delta: float) -> float:
+    excess   = (rsi_4h - 75) / 25.0 if side == "short" else (25 - rsi_4h) / 25.0
+    reversal = min(abs(hist_delta) / 0.01, 1.0) * 0.50
+    return round(min(0.50 * min(excess, 1.0) + reversal, 0.99), 4)
+
+
+def _score_c(proximity: float, rsi_delta: float) -> float:
+    return round(min(0.50 * proximity + 0.50 * min(abs(rsi_delta) / 8.0, 1.0), 0.99), 4)
+
+
+# ── indicator snapshot ─────────────────────────────────────────────────────
 
 @dataclass
 class SignalEngine:
     client: BinanceClient
 
-    def evaluate(self, symbol: str) -> CandidateSignal | None:
-        df_4h = self.client.fetch_ohlcv(symbol, settings.timeframe_trend, limit=300)
-        df_1h = self.client.fetch_ohlcv(symbol, settings.timeframe_structure, limit=300)
-        df_15 = self.client.fetch_ohlcv(symbol, settings.timeframe_execution, limit=300)
+    def generate_signals(self, symbol: str) -> CandidateSignal | None:
+        df_4h = self.client.fetch_ohlcv(symbol, "4h",  limit=300)
+        df_1h = self.client.fetch_ohlcv(symbol, "1h",  limit=100)
+        df_15m = self.client.fetch_ohlcv(symbol, "15m", limit=200)
+        return self._evaluate(symbol, df_4h, df_1h, df_15m)
 
-        bias = detect_bias(df_4h)
-        structure = find_structure(df_1h)
-        fired, reason = find_trigger(df_15, bias, structure)
-        if not fired:
-            log.debug("%s: no signal (bias=%s, reason=%s)", symbol, bias, reason)
+    def _evaluate(
+        self,
+        symbol: str,
+        df_4h: pd.DataFrame,
+        df_1h: pd.DataFrame,
+        df_15m: pd.DataFrame,
+    ) -> CandidateSignal | None:
+
+        if len(df_4h) < _MIN_4H or len(df_1h) < _MIN_1H or len(df_15m) < _MIN_15M:
+            log.debug("%s: insufficient data (4h=%d 1h=%d 15m=%d)",
+                      symbol, len(df_4h), len(df_1h), len(df_15m))
             return None
 
-        atr = float(atr14(df_15).iloc[-1])
-        entry = float(df_15["close"].iloc[-1])
-        side = Side.LONG if bias == "long" else Side.SHORT
+        # ── 4h indicators ──────────────────────────────────────────────────
+        c4 = df_4h["close"]
+        ema50_4h  = ema(c4, 50).iloc[-1]
+        ema200_4h = ema(c4, 200).iloc[-1]
+        rsi_4h    = rsi14(df_4h).iloc[-1]
+        macd_4h   = macd(df_4h)
+        hist_4h   = macd_4h["hist"]
+        close_4h  = float(c4.iloc[-1])
 
-        if side is Side.LONG:
-            stop = entry - settings.atr_stop_multiplier * atr
-            take = entry + settings.atr_take_multiplier * atr
-        else:
-            stop = entry + settings.atr_stop_multiplier * atr
-            take = entry - settings.atr_take_multiplier * atr
+        # ── 1h indicators ──────────────────────────────────────────────────
+        c1 = df_1h["close"]
+        ema50_1h = ema(c1, 50).iloc[-1]
+        close_1h = float(c1.iloc[-1])
+        swings   = swing_high_low(df_1h, lookback=20)
+        sh_valid = swings["swing_high"].dropna()
+        sl_valid = swings["swing_low"].dropna()
+        swing_h: float | None = float(sh_valid.iloc[-1]) if not sh_valid.empty else None
+        swing_l: float | None = float(sl_valid.iloc[-1]) if not sl_valid.empty else None
 
-        return CandidateSignal(
-            symbol=symbol,
-            side=side,
-            type=SignalType.A,
-            entry=entry,
-            stop=stop,
-            take_profit=take,
-            confidence=0.7,
-            rationale=reason,
-            features={"atr": atr, "bias": bias},
+        # ── 15m indicators ─────────────────────────────────────────────────
+        rsi_15 = rsi14(df_15m)
+        rsi_now  = rsi_15.iloc[-1]
+        rsi_prev = rsi_15.iloc[-2]
+        atr_val  = float(atr14(df_15m).iloc[-1])
+        macd_15  = macd(df_15m)
+        hist_15  = macd_15["hist"]
+        vol      = df_15m["volume"]
+        vol_ratio = (
+            float(vol.iloc[-1]) / float(vol.iloc[-20:].mean())
+            if float(vol.iloc[-20:].mean()) > 0 else 1.0
         )
+
+        # NaN guard — any key indicator being NaN aborts
+        guards = [ema50_4h, ema200_4h, rsi_4h, hist_4h.iloc[-1], hist_4h.iloc[-2],
+                  ema50_1h, rsi_now, rsi_prev, atr_val,
+                  hist_15.iloc[-1], hist_15.iloc[-2]]
+        if any(pd.isna(g) for g in guards):
+            log.debug("%s: one or more indicators are NaN, skipping", symbol)
+            return None
+
+        # ── 4h trend bias ─────────────────────────────────────────────────
+        bullish = (close_4h > float(ema50_4h) > float(ema200_4h))
+        bearish = (close_4h < float(ema50_4h) < float(ema200_4h))
+
+        # ── shared reversal conditions (15m) ──────────────────────────────
+        rsi_up   = bool(rsi_now > rsi_prev) and bool(rsi_prev < 45)
+        rsi_down = bool(rsi_now < rsi_prev) and bool(rsi_prev > 55)
+
+        # ── near 1h EMA50 ─────────────────────────────────────────────────
+        near_ema50 = abs(close_1h - float(ema50_1h)) / float(ema50_1h) < 0.03
+
+        # fallback swing levels (used if no confirmed pivot yet)
+        sh_ref = swing_h if swing_h is not None else close_1h * 1.02
+        sl_ref = swing_l if swing_l is not None else close_1h * 0.98
+
+        now = datetime.now(tz=timezone.utc)
+
+        # ════════════════════════════════════════════════════════════════════
+        # TYPE A — with-trend pullback
+        # ════════════════════════════════════════════════════════════════════
+        if bullish and near_ema50 and rsi_up:
+            strength = _score_a(
+                ema_gap_pct=(close_4h - float(ema200_4h)) / float(ema200_4h),
+                rsi_delta=float(rsi_now - rsi_prev),
+                vol_ratio=vol_ratio,
+            )
+            if strength >= 0.25:
+                log.info("%s: Type A LONG strength=%.2f", symbol, strength)
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="long",
+                    entry_type="A", signal_strength=strength,
+                    entry_price_ref=close_4h, atr_14=atr_val,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                )
+
+        if bearish and near_ema50 and rsi_down:
+            strength = _score_a(
+                ema_gap_pct=(float(ema200_4h) - close_4h) / float(ema200_4h),
+                rsi_delta=float(rsi_prev - rsi_now),
+                vol_ratio=vol_ratio,
+            )
+            if strength >= 0.25:
+                log.info("%s: Type A SHORT strength=%.2f", symbol, strength)
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="short",
+                    entry_type="A", signal_strength=strength,
+                    entry_price_ref=close_4h, atr_14=atr_val,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                )
+
+        # ════════════════════════════════════════════════════════════════════
+        # TYPE B — counter-trend extreme
+        # ════════════════════════════════════════════════════════════════════
+        hist_delta_15 = float(hist_15.iloc[-1]) - float(hist_15.iloc[-2])
+
+        if float(rsi_4h) > 75 and rsi_down:
+            strength = _score_b(float(rsi_4h), "short", hist_delta_15)
+            if strength >= 0.20:
+                log.info("%s: Type B SHORT (RSI4h=%.1f) strength=%.2f",
+                         symbol, rsi_4h, strength)
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="short",
+                    entry_type="B", signal_strength=strength,
+                    entry_price_ref=close_4h, atr_14=atr_val,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                )
+
+        if float(rsi_4h) < 25 and rsi_up:
+            strength = _score_b(float(rsi_4h), "long", hist_delta_15)
+            if strength >= 0.20:
+                log.info("%s: Type B LONG (RSI4h=%.1f) strength=%.2f",
+                         symbol, rsi_4h, strength)
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="long",
+                    entry_type="B", signal_strength=strength,
+                    entry_price_ref=close_4h, atr_14=atr_val,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                )
+
+        # ════════════════════════════════════════════════════════════════════
+        # TYPE C — range fade (only when 4h is neutral)
+        # ════════════════════════════════════════════════════════════════════
+        if (not bullish) and (not bearish) and swing_h is not None and swing_l is not None:
+            rng = swing_h - swing_l
+            if rng > 0:
+                pos = (close_1h - swing_l) / rng   # 0 = at low, 1 = at high
+
+                if pos < 0.20 and rsi_up:           # near low → long
+                    proximity = 1.0 - pos / 0.20
+                    strength = _score_c(proximity, float(rsi_now - rsi_prev))
+                    if strength >= 0.20:
+                        log.info("%s: Type C LONG (pos=%.2f) strength=%.2f",
+                                 symbol, pos, strength)
+                        return CandidateSignal(
+                            timestamp=now, symbol=symbol, side="long",
+                            entry_type="C", signal_strength=strength,
+                            entry_price_ref=close_1h, atr_14=atr_val,
+                            swing_high_1h=swing_h, swing_low_1h=swing_l,
+                        )
+
+                if pos > 0.80 and rsi_down:         # near high → short
+                    proximity = (pos - 0.80) / 0.20
+                    strength = _score_c(proximity, float(rsi_prev - rsi_now))
+                    if strength >= 0.20:
+                        log.info("%s: Type C SHORT (pos=%.2f) strength=%.2f",
+                                 symbol, pos, strength)
+                        return CandidateSignal(
+                            timestamp=now, symbol=symbol, side="short",
+                            entry_type="C", signal_strength=strength,
+                            entry_price_ref=close_1h, atr_14=atr_val,
+                            swing_high_1h=swing_h, swing_low_1h=swing_l,
+                        )
+
+        return None

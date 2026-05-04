@@ -1,23 +1,24 @@
 Candidate signal:
 - symbol: {{ signal.symbol }}
 - side: {{ signal.side }}
-- type: {{ signal.type }}
-- entry: {{ '%.4f'|format(signal.entry) }}
-- stop: {{ '%.4f'|format(signal.stop) }}
-- take_profit: {{ '%.4f'|format(signal.take_profit) }}
-- risk_reward: {{ '%.2f'|format(signal.risk_reward()) }}
-- rule_confidence: {{ '%.2f'|format(signal.confidence) }}
-- rationale: {{ signal.rationale }}
+- entry_type: {{ signal.entry_type }}
+- signal_strength: {{ '%.2f'|format(signal.signal_strength) }}
+- entry_price_ref: {{ '%.4f'|format(signal.entry_price_ref) }}
+- atr_14: {{ '%.4f'|format(signal.atr_14) }}
+- swing_high_1h: {{ '%.4f'|format(signal.swing_high_1h) }}
+- swing_low_1h: {{ '%.4f'|format(signal.swing_low_1h) }}
 
 Market context:
-- last_price: {{ context.last_price }}
-- funding_rate: {{ context.funding_rate }}
-- open_interest: {{ context.open_interest }}
-- btc_dominance: {{ context.btc_dominance }}
+- last_price: {{ context.get('last_price') }}
+- funding_rate: {{ context.get('funding_rate') }}
+- open_interest: {{ context.get('open_interest') }}
+- open_interest_delta_1h: {{ context.get('open_interest_delta_1h') }}
+- liquidations_4h_usd: {{ context.get('liquidations_4h_usd') }}
+- btc_1h_direction: {{ context.get('btc_1h_direction') }}
 
-Recent equity:
-- balance_usdt: {{ equity.balance_usdt }}
-- open_positions: {{ equity.open_positions }}
-- consecutive_losses: {{ equity.consecutive_losses }}
+Account state:
+- balance_usdt: {{ equity.get('balance_usdt') }}
+- open_positions: {{ equity.get('open_positions') }}
+- consecutive_losses: {{ equity.get('consecutive_losses') }}
 
-Decide: ALLOW or REJECT. Return strict JSON only.
+Decide: TAKE or SKIP. Return strict JSON only.

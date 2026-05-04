@@ -4,20 +4,19 @@ from __future__ import annotations
 
 
 def test_sizing_zero_when_flat_stop() -> None:
-    from src.risk.sizing import size_position
-    from src.signal.types import CandidateSignal, Side, SignalType
+    from src.risk.sizing import size_from_risk
 
-    sig = CandidateSignal(
-        symbol="BTC/USDT:USDT",
-        side=Side.LONG,
-        type=SignalType.A,
-        entry=100.0,
-        stop=100.0,
-        take_profit=110.0,
-        confidence=0.5,
-        rationale="",
-    )
-    assert size_position(sig, equity_usd=1000.0).quantity == 0.0
+    result = size_from_risk(equity_usd=1000.0, entry_price=100.0, stop_price=100.0)
+    assert result.quantity == 0.0
+
+
+def test_sizing_nonzero_with_valid_stop() -> None:
+    from src.risk.sizing import size_from_risk
+
+    result = size_from_risk(equity_usd=1000.0, entry_price=100.0, stop_price=95.0)
+    assert result.quantity > 0
+    assert result.risk_usd > 0
+    assert result.notional == result.quantity * 100.0
 
 
 def test_limits_block_on_open_positions() -> None:

@@ -1,45 +1,22 @@
-"""Signal taxonomy.
-
-Type A — high-conviction trend continuation (all 3 timeframes aligned).
-Type B — counter-trend reversal at structural level (1h swing flip).
-Type C — range / mean-reversion at well-defined band edges.
-"""
+"""Signal types shared across the pipeline."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
-class SignalType(str, Enum):
-    A = "A"  # trend continuation
-    B = "B"  # reversal
-    C = "C"  # range
-
-
-class Side(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
-
-
-@dataclass
-class CandidateSignal:
-    symbol: str
-    side: Side
-    type: SignalType
-    entry: float
-    stop: float
-    take_profit: float
-    confidence: float                       # 0..1, produced by the rule layer
-    rationale: str                          # short human-readable summary
-    features: dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(
+class CandidateSignal(BaseModel):
+    timestamp: datetime = Field(
         default_factory=lambda: datetime.now(tz=timezone.utc)
     )
-
-    def risk_reward(self) -> float:
-        risk = abs(self.entry - self.stop)
-        reward = abs(self.take_profit - self.entry)
-        return reward / risk if risk > 0 else 0.0
+    symbol: str
+    side: Literal["long", "short"]
+    entry_type: Literal["A", "B", "C"]
+    signal_strength: float = Field(ge=0.0, le=1.0)
+    entry_price_ref: float
+    atr_14: float
+    swing_high_1h: float
+    swing_low_1h: float

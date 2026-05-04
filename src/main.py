@@ -1,8 +1,8 @@
 """Live-bot entry point.
 
 Wires the three layers together:
-    Layer 1: SignalEngine        — rule-based candidate generation
-    Layer 2: VetoAgent (Claude)  — discretionary override
+    Layer 1: SignalEngine        — multi-timeframe candidate generation
+    Layer 2: VetoAgent (Claude)  — LLM override (TAKE / SKIP)
     Layer 3: Trader              — sizing, risk gates, order placement
 """
 
@@ -52,39 +52,53 @@ def run_once(
     veto: VetoAgent,
     trader: Trader,
     notifier: TelegramNotifier,
+    equity_usd: float,
 ) -> None:
     log = logging.getLogger("main")
     open_positions = fetch_open_positions(client)
     risk_state = RiskState(
-        equity_usd=settings.equity_usd,
+        equity_usd=equity_usd,
         open_positions=len(open_positions),
         daily_pnl_pct=0.0,
         drawdown_pct=0.0,
     )
-    append_equity(equity_usd=risk_state.equity_usd)
+    append_equity(equity_usd=equity_usd)
 
     for symbol in symbols:
         try:
-            candidate = engine.evaluate(symbol)
-            if candidate is None:
+            signal = engine.generate_signals(symbol)
+            if signal is None:
                 continue
+
             ctx = get_market_context(symbol, client).model_dump(mode="json")
             equity_payload = {
-                "balance_usdt": risk_state.equity_usd,
+                "balance_usdt": equity_usd,
                 "open_positions": risk_state.open_positions,
                 "consecutive_losses": trader.safety.consecutive_losses,
             }
-            decision = veto.vet(candidate, context=ctx, equity=equity_payload)
-            append_decision(symbol, "ALLOW" if decision.allow else "REJECT",
-                            decision.confidence, decision.reason)
-            if not decision.allow:
-                log.info("%s: VETOED — %s", symbol, decision.reason)
+            veto_resp = veto.vet(signal, context=ctx, equity=equity_payload)
+            append_decision(
+                symbol,
+                veto_resp.decision,
+                veto_resp.confidence,
+                veto_resp.reasoning,
+            )
+
+            if veto_resp.decision == "SKIP":
+                log.info("%s: SKIPPED — %s", symbol, veto_resp.reasoning)
                 continue
-            outcome = trader.execute(candidate, risk_state)
-            if outcome.accepted:
-                notifier.entry(symbol, candidate.side.value, outcome.quantity, candidate.entry)
+
+            outcome = trader.execute(signal, veto_resp, risk_state, equity_usd)
+            if outcome.accepted and outcome.order is not None:
+                notifier.entry(
+                    symbol,
+                    outcome.order.side,
+                    outcome.order.quantity,
+                    outcome.order.entry_price,
+                )
             else:
                 log.info("%s: not executed — %s", symbol, outcome.reason)
+
         except Exception as exc:  # noqa: BLE001
             log.exception("error processing %s", symbol)
             notifier.error(f"{symbol}: {exc}")
@@ -93,12 +107,16 @@ def run_once(
 def main() -> None:
     _configure_logging()
     log = logging.getLogger("main")
-    log.info("starting ai-trader (mode=%s, dry_run=%s, testnet=%s)",
-             settings.trading_mode, settings.dry_run, settings.binance_testnet)
+    log.info(
+        "starting ai-trader (mode=%s, dry_run=%s, testnet=%s)",
+        settings.trading_mode,
+        settings.dry_run,
+        settings.binance_testnet,
+    )
 
     client = BinanceClient()
     engine = SignalEngine(client=client)
-    veto = VetoAgent(client=ClaudeClient())
+    veto   = VetoAgent(client=ClaudeClient())
     safety = SafetyMode()
     trader = Trader(client=client, safety=safety)
     notifier = TelegramNotifier()
@@ -107,7 +125,7 @@ def main() -> None:
     log.info("trading universe: %s", symbols)
 
     while True:
-        run_once(symbols, client, engine, veto, trader, notifier)
+        run_once(symbols, client, engine, veto, trader, notifier, settings.equity_usd)
         time.sleep(settings.loop_interval_sec)
 
 

@@ -20,9 +20,6 @@ from src.data.indicators import atr14
 from src.signal.execution import find_trigger
 from src.signal.structure import find_structure
 from src.signal.trend import detect_bias
-from src.signal.types import Side
-
-
 @dataclass
 class BacktestStats:
     trades: int
@@ -48,7 +45,7 @@ def run_backtest(symbol: str, lookback_bars: int = 1500) -> BacktestStats:
 
     stats = BacktestStats(0, 0, 0, 0.0)
     in_pos = False
-    side: Side | None = None
+    side: str | None = None   # "long" | "short"
     entry = stop = take = 0.0
 
     for i in _iter_windows(df_15, warmup=220):
@@ -58,11 +55,11 @@ def run_backtest(symbol: str, lookback_bars: int = 1500) -> BacktestStats:
 
         if in_pos and side is not None:
             row = df_15.iloc[i]
-            hit_stop = row["low"] <= stop if side is Side.LONG else row["high"] >= stop
-            hit_take = row["high"] >= take if side is Side.LONG else row["low"] <= take
+            hit_stop = row["low"] <= stop if side == "long" else row["high"] >= stop
+            hit_take = row["high"] >= take if side == "long" else row["low"] <= take
             if hit_stop or hit_take:
                 pnl = (take - entry) if hit_take else (stop - entry)
-                pnl = pnl if side is Side.LONG else -pnl
+                pnl = pnl if side == "long" else -pnl
                 stats.pnl_usd += pnl
                 stats.trades += 1
                 stats.wins += int(pnl > 0)
@@ -80,8 +77,8 @@ def run_backtest(symbol: str, lookback_bars: int = 1500) -> BacktestStats:
         if pd.isna(atr) or atr <= 0:
             continue
         entry = float(slice_15["close"].iloc[-1])
-        side = Side.LONG if bias == "long" else Side.SHORT
-        if side is Side.LONG:
+        side = "long" if bias == "long" else "short"
+        if side == "long":
             stop = entry - settings.atr_stop_multiplier * atr
             take = entry + settings.atr_take_multiplier * atr
         else:
