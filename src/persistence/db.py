@@ -8,6 +8,7 @@ from typing import Iterable
 
 import pandas as pd
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -56,6 +57,32 @@ class Decision(Base):
     reason = Column(Text)
     raw = Column(Text)
     created_at = Column(DateTime(timezone=True), default=_now)
+
+
+class AIDecision(Base):
+    """Full audit trail for every veto-layer decision (preflight or LLM)."""
+
+    __tablename__ = "ai_decisions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(DateTime(timezone=True), default=_now, index=True)
+    symbol = Column(String(32), index=True)
+    side = Column(String(8))
+    entry_type = Column(String(4))
+    signal_strength = Column(Float, default=0.0)
+    decision = Column(String(8))
+    confidence = Column(Float, default=0.0)
+    invalidation_signal = Column(Text)
+    reasoning = Column(Text)
+    skipped_by_preflight = Column(Boolean, default=False)
+    preflight_rule = Column(String(64), nullable=True)
+    request_user = Column(Text, nullable=True)
+    response_raw = Column(Text, nullable=True)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    cost_usd = Column(Float, default=0.0)
+    duration_ms = Column(Integer, default=0)
+    attempts = Column(Integer, default=0)
+    model = Column(String(64), nullable=True)
 
 
 class EquityPoint(Base):

@@ -1,73 +1,134 @@
-"""Layer 2 — LLM veto over a rule-based candidate signal."""
+"""Layer 2 — pre-flight hard rules + LLM veto.
+
+Hard rules duplicate the constraints in `prompts/system.txt`; we evaluate them
+locally first to avoid spending Anthropic credits on calls that the prompt
+would auto-reject anyway. Anything that passes pre-flight is delegated to
+`ClaudeClient.veto()`.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel, Field
-
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-
-from src.config import settings
 from src.llm.client import ClaudeClient
+from src.llm.types import VetoAccount, VetoContext, VetoResponse
+from src.persistence.db import AIDecision, make_session_factory
 from src.signal.types import CandidateSignal
 
 log = logging.getLogger(__name__)
 
-PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+# Thresholds mirror the HARD RULES section of prompts/system.txt.
+# Funding rate is expressed in percent (matches user.j2 rendering).
+MAX_OPEN_POSITIONS = 2
+MAX_DAILY_LOSS_PCT = -3.0
+MAX_LOSSES_STREAK = 3
+FUNDING_OVERHEATED_PCT = 0.05
+LIQUIDATION_SQUEEZE_USD = 50_000_000.0
 
 
-class VetoResponse(BaseModel):
-    decision: Literal["TAKE", "SKIP"]
-    confidence: float = Field(ge=0.0, le=1.0)
-    invalidation_signal: str
-    reasoning: str
+# Re-export for callers that still import VetoResponse from this module.
+__all__ = [
+    "VetoResponse",
+    "VetoContext",
+    "VetoAccount",
+    "veto_candidate",
+    "preflight_check",
+]
 
 
-@dataclass
-class VetoAgent:
-    client: ClaudeClient
+def preflight_check(
+    candidate: CandidateSignal,
+    context: VetoContext,
+    account: VetoAccount,
+) -> str | None:
+    """Return the name of the violated hard rule, or `None` if all pass."""
+    if account.open_positions >= MAX_OPEN_POSITIONS:
+        return "open_positions"
+    if account.daily_pnl_pct <= MAX_DAILY_LOSS_PCT:
+        return "daily_pnl"
+    if account.losses_streak >= MAX_LOSSES_STREAK:
+        return "losses_streak"
+    if candidate.side == "long" and context.funding_rate_now > FUNDING_OVERHEATED_PCT:
+        return "funding_long_overheated"
+    if candidate.side == "short" and context.funding_rate_now < -FUNDING_OVERHEATED_PCT:
+        return "funding_short_oversold"
+    if candidate.side == "long" and context.liq_long > LIQUIDATION_SQUEEZE_USD:
+        return "long_liquidation_squeeze"
+    if candidate.side == "short" and context.liq_short > LIQUIDATION_SQUEEZE_USD:
+        return "short_liquidation_squeeze"
+    return None
 
-    def __post_init__(self) -> None:
-        self._env = Environment(
-            loader=FileSystemLoader(str(PROMPTS_DIR)),
-            autoescape=select_autoescape(),
-            keep_trailing_newline=True,
-        )
-        self._system_prompt = (PROMPTS_DIR / "system.txt").read_text(encoding="utf-8")
 
-    def vet(
-        self,
-        signal: CandidateSignal,
-        context: dict[str, Any],
-        equity: dict[str, Any],
-    ) -> VetoResponse:
-        template = self._env.get_template("user.j2")
-        user = template.render(signal=signal, context=context, equity=equity)
-        raw = self.client.complete(system=self._system_prompt, user=user)
+def _coerce_context(context: Any) -> VetoContext:
+    if isinstance(context, VetoContext):
+        return context
+    return VetoContext.model_validate(context or {})
 
-        try:
-            payload = json.loads(raw)
-            decision = str(payload.get("decision", "SKIP")).upper()
-            if decision not in {"TAKE", "SKIP"}:
-                decision = "SKIP"
-            return VetoResponse(
-                decision=decision,
-                confidence=float(payload.get("confidence", 0.0)),
-                invalidation_signal=str(payload.get("invalidation_signal", "")),
-                reasoning=str(payload.get("reasoning", payload.get("reason", ""))),
-            )
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
-            log.warning("veto: failed to parse LLM response: %s | raw=%s", exc, raw[:200])
-            if settings.dry_run:
-                return VetoResponse(
-                    decision="SKIP",
-                    confidence=0.0,
-                    invalidation_signal="parse_error",
-                    reasoning="LLM response could not be parsed",
+
+def _coerce_account(account: Any) -> VetoAccount:
+    if isinstance(account, VetoAccount):
+        return account
+    return VetoAccount.model_validate(account or {})
+
+
+def _log_preflight(
+    candidate: CandidateSignal,
+    rule: str,
+    response: VetoResponse,
+) -> None:
+    try:
+        session_factory = make_session_factory()
+        with session_factory() as s:
+            s.add(
+                AIDecision(
+                    symbol=candidate.symbol,
+                    side=candidate.side,
+                    entry_type=candidate.entry_type,
+                    signal_strength=candidate.signal_strength,
+                    decision=response.decision,
+                    confidence=response.confidence,
+                    invalidation_signal=response.invalidation_signal,
+                    reasoning=response.reasoning,
+                    skipped_by_preflight=True,
+                    preflight_rule=rule,
+                    request_user=None,
+                    response_raw=None,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost_usd=0.0,
+                    duration_ms=0,
+                    attempts=0,
+                    model=None,
                 )
-            raise
+            )
+            s.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("veto: failed to persist preflight decision: %s", exc)
+
+
+def veto_candidate(
+    candidate: CandidateSignal,
+    context: VetoContext | dict[str, Any] | None = None,
+    account: VetoAccount | dict[str, Any] | None = None,
+    *,
+    client: ClaudeClient | None = None,
+) -> VetoResponse:
+    """Apply hard rules first, then defer to the LLM if pre-flight passes."""
+    ctx = _coerce_context(context)
+    acct = _coerce_account(account)
+
+    rule = preflight_check(candidate, ctx, acct)
+    if rule is not None:
+        log.info("veto: pre-flight SKIP for %s (%s)", candidate.symbol, rule)
+        response = VetoResponse(
+            decision="SKIP",
+            confidence=1.0,
+            invalidation_signal="hard rule violated; do not enter",
+            reasoning=f"pre-flight hard rule failed: {rule}",
+        )
+        _log_preflight(candidate, rule, response)
+        return response
+
+    llm = client if client is not None else ClaudeClient()
+    return llm.veto(candidate=candidate, context=ctx, account=acct)
