@@ -10,8 +10,6 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Non-root user
-RUN useradd --create-home --uid 1000 trader
 WORKDIR /app
 
 # Install Python deps first for layer caching
@@ -24,12 +22,9 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
 
-# Make scripts executable before dropping privileges
 RUN chmod +x /app/scripts/*.sh
 
-RUN mkdir -p /app/data && chown -R trader:trader /app
-
-USER trader
+RUN mkdir -p /app/data
 
 ENV PYTHONPATH=/app
 
