@@ -1,0 +1,35 @@
+# Railway deployment configuration
+# Docs: https://docs.railway.com/reference/config-as-code
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Runs the Streamlit dashboard (web-facing) AND the trading loop together.
+# Railway routes external HTTPS traffic to $PORT; the dashboard is accessible
+# in the browser. The trading loop runs as a background process in the same
+# container so both share the SQLite DB at /app/data/trades.db.
+startCommand = "bash /app/scripts/start.sh"
+
+# Streamlit's health endpoint – Railway uses this to decide the service is up.
+healthcheckPath = "/_stcore/health"
+healthcheckTimeout = 300
+
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+[deploy.environmentVariables]
+# Sensible defaults that Railway can override via the Variables panel.
+# Secrets (API keys) must be added in the Railway dashboard – never commit them.
+PYTHONPATH = "/app"
+PYTHONDONTWRITEBYTECODE = "1"
+PYTHONUNBUFFERED = "1"
+LOG_LEVEL = "INFO"
+TRADING_MODE = "paper"
+PAPER_TRADING = "true"
+DRY_RUN = "true"
+BINANCE_TESTNET = "true"
+DB_PATH = "data/trades.db"
+EQUITY_USD = "1000.0"
+LEVERAGE = "3"

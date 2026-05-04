@@ -24,9 +24,10 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
 
-# Runtime data volume
+# Make scripts executable before dropping privileges
+RUN chmod +x /app/scripts/*.sh
+
 RUN mkdir -p /app/data && chown -R trader:trader /app
-VOLUME ["/app/data"]
 
 USER trader
 
