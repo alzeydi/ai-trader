@@ -1,4 +1,4 @@
-"""SQLite persistence: trades, AI decisions, equity snapshots, OHLCV cache."""
+"""SQLite persistence: trades, AI decisions, equity snapshots, positions, OHLCV cache."""
 
 from __future__ import annotations
 
@@ -33,6 +33,14 @@ def _now() -> datetime:
 
 
 class Trade(Base):
+    """Realised trade lifecycle row.
+
+    Spec fields (id, ts_open, ts_close, symbol, side, entry, exit, qty,
+    pnl_usd, pnl_pct, fees, close_reason, llm_confidence, invalidation_signal)
+    are exposed as attributes; `ts_open`/`ts_close`/`exit`/`qty` are aliased
+    to the legacy column names so existing call-sites keep working.
+    """
+
     __tablename__ = "trades"
     id = Column(Integer, primary_key=True, autoincrement=True)
     symbol = Column(String(32), nullable=False, index=True)
@@ -45,6 +53,8 @@ class Trade(Base):
     leverage = Column(Integer, default=1)
     risk_usd = Column(Float, default=0.0)
     pnl_usd = Column(Float, default=0.0)
+    pnl_pct = Column(Float, default=0.0)
+    fees = Column(Float, default=0.0)
     opened_at = Column(DateTime(timezone=True), default=_now, index=True)
     closed_at = Column(DateTime(timezone=True), nullable=True, index=True)
     close_price = Column(Float, nullable=True)
@@ -57,6 +67,23 @@ class Trade(Base):
     invalidation_signal = Column(Text, nullable=True)
     llm_confidence = Column(Float, default=0.0)
     last_invalidation_check_at = Column(DateTime(timezone=True), nullable=True)
+
+    # --- spec aliases ----------------------------------------------------
+    @property
+    def ts_open(self) -> datetime | None:
+        return self.opened_at
+
+    @property
+    def ts_close(self) -> datetime | None:
+        return self.closed_at
+
+    @property
+    def exit(self) -> float | None:
+        return self.close_price
+
+    @property
+    def qty(self) -> float:
+        return float(self.quantity)
 
 
 class Decision(Base):
@@ -71,7 +98,12 @@ class Decision(Base):
 
 
 class AIDecision(Base):
-    """Full audit trail for every veto-layer decision (preflight or LLM)."""
+    """Full audit trail for every veto-layer decision (preflight or LLM).
+
+    Spec-required columns (`candidate_json`, `veto_json`, `took`,
+    `cost_usd`, `ts`, `symbol`) are present; `ts` is an alias for
+    `created_at`.
+    """
 
     __tablename__ = "ai_decisions"
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -88,6 +120,9 @@ class AIDecision(Base):
     preflight_rule = Column(String(64), nullable=True)
     request_user = Column(Text, nullable=True)
     response_raw = Column(Text, nullable=True)
+    candidate_json = Column(Text, nullable=True)
+    veto_json = Column(Text, nullable=True)
+    took = Column(Boolean, default=False)
     input_tokens = Column(Integer, default=0)
     output_tokens = Column(Integer, default=0)
     cost_usd = Column(Float, default=0.0)
@@ -95,14 +130,61 @@ class AIDecision(Base):
     attempts = Column(Integer, default=0)
     model = Column(String(64), nullable=True)
 
+    @property
+    def ts(self) -> datetime | None:
+        return self.created_at
 
-class EquityPoint(Base):
-    __tablename__ = "equity"
+
+class EquitySnapshot(Base):
+    """Per-tick portfolio snapshot used by the equity curve and metrics."""
+
+    __tablename__ = "equity_snapshots"
     id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_at = Column(DateTime(timezone=True), default=_now, index=True)
     equity_usd = Column(Float, nullable=False)
+    balance_usd = Column(Float, nullable=False, default=0.0)
     realized_pnl = Column(Float, default=0.0)
     unrealized_pnl = Column(Float, default=0.0)
-    snapshot_at = Column(DateTime(timezone=True), default=_now, index=True)
+
+    @property
+    def ts(self) -> datetime | None:
+        return self.snapshot_at
+
+    @property
+    def equity(self) -> float:
+        return float(self.equity_usd)
+
+    @property
+    def balance(self) -> float:
+        return float(self.balance_usd)
+
+
+# Legacy alias so older imports (`EquityPoint`) keep resolving.
+EquityPoint = EquitySnapshot
+
+
+class Position(Base):
+    """Live state of an open position.
+
+    Mirrors the exchange snapshot for the dashboard and recovery on restart.
+    Updated by the position monitor; deleted (or `closed_at` set) on close.
+    """
+
+    __tablename__ = "positions"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trade_id = Column(Integer, nullable=True, index=True)
+    symbol = Column(String(32), nullable=False, index=True)
+    side = Column(String(8), nullable=False)
+    quantity = Column(Float, nullable=False)
+    entry_price = Column(Float, nullable=False)
+    mark_price = Column(Float, nullable=True)
+    leverage = Column(Integer, default=1)
+    margin_usd = Column(Float, default=0.0)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    unrealized_pnl = Column(Float, default=0.0)
+    opened_at = Column(DateTime(timezone=True), default=_now, index=True)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
 
 
 class SafetyState(Base):
@@ -195,6 +277,97 @@ def daily_realized_pnl(session_factory: SessionFactory) -> float:
             .where(Trade.closed_at >= today)
         ).scalars().all()
     return float(sum((r.pnl_usd or 0.0) for r in rows))
+
+
+# ----- Equity helpers -----
+
+def append_equity_snapshot(
+    session_factory: SessionFactory,
+    *,
+    equity_usd: float,
+    balance_usd: float | None = None,
+    realized_pnl: float = 0.0,
+    unrealized_pnl: float = 0.0,
+) -> None:
+    with session_factory() as s:
+        s.add(
+            EquitySnapshot(
+                equity_usd=float(equity_usd),
+                balance_usd=float(balance_usd if balance_usd is not None else equity_usd),
+                realized_pnl=float(realized_pnl),
+                unrealized_pnl=float(unrealized_pnl),
+            )
+        )
+        s.commit()
+
+
+# ----- Position helpers -----
+
+def upsert_position(
+    session_factory: SessionFactory,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    entry_price: float,
+    mark_price: float | None = None,
+    leverage: int = 1,
+    margin_usd: float = 0.0,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+    unrealized_pnl: float = 0.0,
+    trade_id: int | None = None,
+) -> int:
+    """Create or update the live `Position` row for `symbol`."""
+    with session_factory() as s:
+        row = s.execute(
+            select(Position).where(Position.symbol == symbol)
+        ).scalar_one_or_none()
+        if row is None:
+            row = Position(
+                symbol=symbol,
+                side=side,
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                mark_price=mark_price,
+                leverage=int(leverage),
+                margin_usd=float(margin_usd),
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                unrealized_pnl=float(unrealized_pnl),
+                trade_id=trade_id,
+            )
+            s.add(row)
+        else:
+            row.side = side
+            row.quantity = float(quantity)
+            row.entry_price = float(entry_price)
+            row.mark_price = mark_price
+            row.leverage = int(leverage)
+            row.margin_usd = float(margin_usd)
+            row.stop_loss = stop_loss
+            row.take_profit = take_profit
+            row.unrealized_pnl = float(unrealized_pnl)
+            if trade_id is not None:
+                row.trade_id = trade_id
+        s.commit()
+        return int(row.id)
+
+
+def remove_position(session_factory: SessionFactory, symbol: str) -> None:
+    with session_factory() as s:
+        row = s.execute(
+            select(Position).where(Position.symbol == symbol)
+        ).scalar_one_or_none()
+        if row is not None:
+            s.delete(row)
+            s.commit()
+
+
+def list_positions(session_factory: SessionFactory) -> list["Position"]:
+    with session_factory() as s:
+        rows = s.execute(select(Position)).scalars().all()
+    return list(rows)
 
 
 # ----- Safety-state helpers -----
@@ -307,3 +480,55 @@ def read_cached_candles(
     )
     df = pd.DataFrame(records).sort_values("ts").set_index("ts")
     return df
+
+
+# ----- CSV export (dashboard / backup compatibility) -----
+
+_EXPORT_TABLES: dict[str, type[Base]] = {
+    "trades": Trade,
+    "ai_decisions": AIDecision,
+    "decisions": Decision,
+    "equity_snapshots": EquitySnapshot,
+    "positions": Position,
+    "safety_state": SafetyState,
+}
+
+
+def _row_to_dict(row: Base) -> dict:
+    out: dict = {}
+    for col in row.__table__.columns:  # type: ignore[attr-defined]
+        out[col.name] = getattr(row, col.name)
+    return out
+
+
+def export_to_csv(
+    out_dir: Path | str | None = None,
+    session_factory: SessionFactory | None = None,
+    tables: Iterable[str] | None = None,
+) -> dict[str, Path]:
+    """Dump selected tables to CSV files.
+
+    Mirrors the legacy CSV layout the dashboard reads as a fallback and
+    doubles as a one-shot backup. Returns a mapping `table_name -> path`
+    of files actually written.
+    """
+    sf = session_factory or make_session_factory()
+    target_dir = Path(out_dir) if out_dir is not None else (settings.project_root / "data" / "exports")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    selected = list(tables) if tables is not None else list(_EXPORT_TABLES.keys())
+    written: dict[str, Path] = {}
+
+    with sf() as s:
+        for name in selected:
+            model = _EXPORT_TABLES.get(name)
+            if model is None:
+                continue
+            rows = s.execute(select(model)).scalars().all()
+            df = pd.DataFrame([_row_to_dict(r) for r in rows]) if rows else pd.DataFrame(
+                columns=[c.name for c in model.__table__.columns]  # type: ignore[attr-defined]
+            )
+            path = target_dir / f"{name}.csv"
+            df.to_csv(path, index=False)
+            written[name] = path
+    return written
