@@ -27,9 +27,7 @@ COPY scripts ./scripts
 # Make scripts executable before dropping privileges
 RUN chmod +x /app/scripts/*.sh
 
-# Runtime data volume
 RUN mkdir -p /app/data && chown -R trader:trader /app
-VOLUME ["/app/data"]
 
 USER trader
 
