@@ -25,13 +25,6 @@ def _make_signal(side: str = "long") -> CandidateSignal:
     )
 
 
-@pytest.fixture(autouse=True)
-def _isolated_db(tmp_path, monkeypatch):
-    """Redirect every DB write in this module to a per-test tmp file."""
-    monkeypatch.setattr("src.config.settings.db_path", str(tmp_path / "test.db"))
-    yield
-
-
 @pytest.fixture
 def fast_sleep(monkeypatch):
     monkeypatch.setattr("src.llm.client.time.sleep", lambda *_: None)

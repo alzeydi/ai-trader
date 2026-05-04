@@ -49,21 +49,28 @@ class Settings(BaseSettings):
 
     # ----- Risk -----
     risk_per_trade_pct: float = 0.5
-    max_open_positions: int = 3
+    risk_per_trade_type_a: float = 0.02  # ratio, e.g. 0.02 == 2 % of equity
+    risk_per_trade_type_b: float = 0.01
+    risk_per_trade_type_c: float = 0.01
+    max_open_positions: int = 2
     max_daily_loss_pct: float = 3.0
     max_drawdown_pct: float = 15.0
     atr_stop_multiplier: float = 1.5
     atr_take_multiplier: float = 3.0
+    min_confidence: float = 0.7
+    taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
+    max_hold_hours: int = 8
 
     # ----- Safety mode -----
     safety_max_consecutive_losses: int = 3
-    safety_pause_hours: int = 12
+    safety_pause_hours: int = 24
 
     # ----- Signal engine -----
     timeframe_trend: str = "4h"
     timeframe_structure: str = "1h"
     timeframe_execution: str = "15m"
     signal_min_confidence: float = 0.6
+    invalidation_check_interval_min: int = 15
 
     # ----- Persistence -----
     db_path: str = "data/trades.db"
@@ -73,7 +80,9 @@ class Settings(BaseSettings):
     # ----- Runtime -----
     log_level: str = "INFO"
     loop_interval_sec: int = 60
+    monitor_interval_sec: int = 60
     dry_run: bool = True
+    paper_trading: bool = True
 
     # ----- Derived helpers -----
     @property

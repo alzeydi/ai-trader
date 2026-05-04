@@ -42,10 +42,21 @@ class Trade(Base):
     stop = Column(Float, nullable=False)
     take_profit = Column(Float, nullable=False)
     quantity = Column(Float, nullable=False)
+    leverage = Column(Integer, default=1)
+    risk_usd = Column(Float, default=0.0)
     pnl_usd = Column(Float, default=0.0)
-    opened_at = Column(DateTime(timezone=True), default=_now)
-    closed_at = Column(DateTime(timezone=True), nullable=True)
+    opened_at = Column(DateTime(timezone=True), default=_now, index=True)
+    closed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    close_price = Column(Float, nullable=True)
+    close_reason = Column(String(32), nullable=True)
     notes = Column(Text, nullable=True)
+    paper = Column(Boolean, default=True)
+    entry_order_id = Column(String(64), nullable=True)
+    stop_order_id = Column(String(64), nullable=True)
+    take_order_id = Column(String(64), nullable=True)
+    invalidation_signal = Column(Text, nullable=True)
+    llm_confidence = Column(Float, default=0.0)
+    last_invalidation_check_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class Decision(Base):
@@ -94,6 +105,18 @@ class EquityPoint(Base):
     snapshot_at = Column(DateTime(timezone=True), default=_now, index=True)
 
 
+class SafetyState(Base):
+    """Single-row table storing the active safety-mode pause."""
+
+    __tablename__ = "safety_state"
+    id = Column(Integer, primary_key=True, default=1)
+    paused_until = Column(DateTime(timezone=True), nullable=True)
+    activated_at = Column(DateTime(timezone=True), nullable=True)
+    reason = Column(Text, nullable=True)
+    consecutive_losses = Column(Integer, default=0)
+    updated_at = Column(DateTime(timezone=True), default=_now, onupdate=_now)
+
+
 class OhlcvCandle(Base):
     """Persistent cache of historical candles per (symbol, timeframe)."""
 
@@ -124,6 +147,87 @@ SessionFactory = sessionmaker[Session]
 def make_session_factory(engine=None) -> SessionFactory:
     eng = engine or make_engine()
     return sessionmaker(bind=eng, expire_on_commit=False, future=True)
+
+
+# ----- Trade helpers -----
+
+def get_last_n_closed_trades(
+    session_factory: SessionFactory, n: int
+) -> list["Trade"]:
+    """Return the `n` most recently closed trades, newest first."""
+    if n <= 0:
+        return []
+    with session_factory() as s:
+        rows = s.execute(
+            select(Trade)
+            .where(Trade.closed_at.isnot(None))
+            .order_by(Trade.closed_at.desc())
+            .limit(n)
+        ).scalars().all()
+    return list(rows)
+
+
+def count_open_trades(session_factory: SessionFactory) -> int:
+    with session_factory() as s:
+        rows = s.execute(
+            select(Trade).where(Trade.closed_at.is_(None))
+        ).scalars().all()
+    return len(rows)
+
+
+def list_open_trades(session_factory: SessionFactory) -> list["Trade"]:
+    with session_factory() as s:
+        rows = s.execute(
+            select(Trade).where(Trade.closed_at.is_(None))
+        ).scalars().all()
+    return list(rows)
+
+
+def daily_realized_pnl(session_factory: SessionFactory) -> float:
+    """Sum of realised PnL on trades closed since UTC midnight."""
+    today = datetime.now(tz=timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    with session_factory() as s:
+        rows = s.execute(
+            select(Trade)
+            .where(Trade.closed_at.isnot(None))
+            .where(Trade.closed_at >= today)
+        ).scalars().all()
+    return float(sum((r.pnl_usd or 0.0) for r in rows))
+
+
+# ----- Safety-state helpers -----
+
+def load_safety_state(session_factory: SessionFactory) -> "SafetyState | None":
+    with session_factory() as s:
+        return s.execute(select(SafetyState).where(SafetyState.id == 1)).scalar_one_or_none()
+
+
+def save_safety_state(
+    session_factory: SessionFactory,
+    *,
+    paused_until: datetime | None,
+    consecutive_losses: int,
+    reason: str | None,
+) -> None:
+    with session_factory() as s:
+        row = s.execute(select(SafetyState).where(SafetyState.id == 1)).scalar_one_or_none()
+        if row is None:
+            row = SafetyState(
+                id=1,
+                paused_until=paused_until,
+                activated_at=_now() if paused_until else None,
+                reason=reason,
+                consecutive_losses=consecutive_losses,
+            )
+            s.add(row)
+        else:
+            row.paused_until = paused_until
+            row.activated_at = _now() if paused_until else None
+            row.reason = reason
+            row.consecutive_losses = consecutive_losses
+        s.commit()
 
 
 # ----- OHLCV cache helpers -----
