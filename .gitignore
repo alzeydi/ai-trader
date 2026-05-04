@@ -55,8 +55,8 @@ dmypy.json
 *.swo
 .DS_Store
 
-# Project runtime data
-data/
+# Project runtime data (top-level only — `src/data/` is source code)
+/data/
 *.db
 *.db-journal
 *.sqlite

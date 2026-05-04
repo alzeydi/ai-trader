@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
-from src.data.indicators import add_atr
+from src.data.indicators import atr14
 from src.signal.execution import find_trigger
 from src.signal.structure import find_structure
 from src.signal.trend import detect_bias
@@ -37,8 +37,7 @@ class SignalEngine:
             log.debug("%s: no signal (bias=%s, reason=%s)", symbol, bias, reason)
             return None
 
-        feat = add_atr(df_15)
-        atr = float(feat["atr_14"].iloc[-1])
+        atr = float(atr14(df_15).iloc[-1])
         entry = float(df_15["close"].iloc[-1])
         side = Side.LONG if bias == "long" else Side.SHORT
 

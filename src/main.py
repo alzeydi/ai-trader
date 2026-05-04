@@ -16,7 +16,7 @@ import yaml
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
-from src.data.context import fetch_context
+from src.data.context import get_market_context
 from src.execution.monitor import fetch_open_positions
 from src.execution.trader import Trader
 from src.llm.client import ClaudeClient
@@ -68,7 +68,7 @@ def run_once(
             candidate = engine.evaluate(symbol)
             if candidate is None:
                 continue
-            ctx = fetch_context(client, symbol).as_dict()
+            ctx = get_market_context(symbol, client).model_dump(mode="json")
             equity_payload = {
                 "balance_usdt": risk_state.equity_usd,
                 "open_positions": risk_state.open_positions,

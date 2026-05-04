@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
-from src.data.indicators import add_atr
+from src.data.indicators import atr14
 from src.signal.execution import find_trigger
 from src.signal.structure import find_structure
 from src.signal.trend import detect_bias
@@ -44,7 +44,7 @@ def run_backtest(symbol: str, lookback_bars: int = 1500) -> BacktestStats:
     df_4h = client.fetch_ohlcv(symbol, settings.timeframe_trend, limit=lookback_bars // 8)
     df_1h = client.fetch_ohlcv(symbol, settings.timeframe_structure, limit=lookback_bars // 4)
     df_15 = client.fetch_ohlcv(symbol, settings.timeframe_execution, limit=lookback_bars)
-    df_15 = add_atr(df_15)
+    atr_series = atr14(df_15)
 
     stats = BacktestStats(0, 0, 0, 0.0)
     in_pos = False
@@ -76,7 +76,7 @@ def run_backtest(symbol: str, lookback_bars: int = 1500) -> BacktestStats:
         fired, _ = find_trigger(slice_15, bias, structure)
         if not fired:
             continue
-        atr = float(slice_15["atr_14"].iloc[-1])
+        atr = float(atr_series.iloc[i])
         if pd.isna(atr) or atr <= 0:
             continue
         entry = float(slice_15["close"].iloc[-1])

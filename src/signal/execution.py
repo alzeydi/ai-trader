@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.data.indicators import standard_set
+from src.data.indicators import rsi14
 from src.signal.structure import Structure
 from src.signal.trend import TrendBias
 
@@ -21,14 +21,13 @@ def find_trigger(
     """Return (fired, reason)."""
     if bias == "neutral":
         return False, "no trend bias"
-    feat = standard_set(df_15m)
-    last = feat.iloc[-1]
-    rsi = last.get("rsi_14")
+    rsi_last = rsi14(df_15m).iloc[-1]
+    close_last = df_15m["close"].iloc[-1]
 
     if bias == "long" and structure.last_swing_high is not None:
-        if last["close"] > structure.last_swing_high and rsi is not None and rsi > 50:
+        if close_last > structure.last_swing_high and not pd.isna(rsi_last) and rsi_last > 50:
             return True, "break of 1h swing high with RSI>50"
     if bias == "short" and structure.last_swing_low is not None:
-        if last["close"] < structure.last_swing_low and rsi is not None and rsi < 50:
+        if close_last < structure.last_swing_low and not pd.isna(rsi_last) and rsi_last < 50:
             return True, "break of 1h swing low with RSI<50"
     return False, "no trigger"
