@@ -69,3 +69,63 @@ symbols:
     min_notional_usdt: 10
     tick_precision: 4
     quantity_precision: 1
+
+  - symbol: TRX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: DOT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: LTC/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 3
+
+  - symbol: BCH/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 3
+
+  - symbol: NEAR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: APT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: ARB/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: OP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ATOM/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: INJ/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
