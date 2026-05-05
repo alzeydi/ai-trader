@@ -129,3 +129,123 @@ symbols:
     min_notional_usdt: 10
     tick_precision: 3
     quantity_precision: 1
+
+  - symbol: AAVE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: UNI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: FIL/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: ETC/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: HBAR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: ICP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: IMX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: RUNE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: SEI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: TIA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: FET/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: RNDR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: STX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ALGO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: GRT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: LDO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: CRV/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: PEPE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 8
+    quantity_precision: 0
+
+  - symbol: WIF/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ORDI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
