@@ -72,7 +72,19 @@ class BinanceClient:
         }
         self._exchange = ccxt.binanceusdm(params)
         if self.testnet:
-            self._exchange.set_sandbox_mode(True)
+            # Binance retired the classic testnet (testnet.binancefuture.com)
+            # and replaced it with "Demo Trading" at demo-fapi.binance.com.
+            # ccxt's set_sandbox_mode still points at the dead testnet host,
+            # so we patch URLs manually.
+            api_urls = self._exchange.urls.get("api", {})
+            if isinstance(api_urls, dict):
+                patched = {
+                    k: (v.replace("fapi.binance.com", "demo-fapi.binance.com")
+                        if isinstance(v, str) and "fapi.binance.com" in v else v)
+                    for k, v in api_urls.items()
+                }
+                self._exchange.urls["api"] = patched
+            log.info("binance: using demo trading endpoint demo-fapi.binance.com")
         if self.session_factory is None:
             self.session_factory = make_session_factory()
 
