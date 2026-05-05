@@ -74,7 +74,6 @@ def _extract_json(text: str) -> dict[str, Any]:
 class ClaudeClient:
     model: str = field(default_factory=lambda: settings.claude_model)
     max_tokens: int = field(default_factory=lambda: settings.claude_max_tokens)
-    temperature: float = field(default_factory=lambda: settings.claude_temperature)
     timeout_s: float = 30.0
     max_retries: int = 3
     log_to_db: bool = True
@@ -109,7 +108,6 @@ class ClaudeClient:
         msg = self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
-            temperature=self.temperature,
             system=system,
             messages=[{"role": "user", "content": user}],
         )
