@@ -23,7 +23,49 @@ symbols:
     quantity_precision: 1
 
   - symbol: BNB/USDT:USDT
-    enabled: false
+    enabled: true
     min_notional_usdt: 10
     tick_precision: 2
     quantity_precision: 2
+
+  - symbol: XRP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: DOGE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: ADA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 0
+
+  - symbol: AVAX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: LINK/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: SUI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: TON/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
