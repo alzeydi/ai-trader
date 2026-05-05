@@ -192,9 +192,27 @@ class PositionMonitor:
         # Symmetric for short.
         if side == "long":
             target_stop = (target_locked / qty + entry * (1.0 + fee_pct)) / (1.0 - fee_pct)
-            tighter = target_stop > float(trade.stop)
         else:
             target_stop = (entry * (1.0 - fee_pct) - target_locked / qty) / (1.0 + fee_pct)
+
+        # Round to exchange precision BEFORE the tighter-than-current check.
+        # Without this, the raw float drifts microscopically each tick while
+        # the stored value is the rounded one — so `target_stop > trade.stop`
+        # is true on every tick by 1e-6, replace_stop fires, sweep cancels
+        # the identical SL, and the user gets a TRAIL notification per
+        # minute showing the same "0.113070 → 0.113072" no-op move.
+        if self.client is not None:
+            try:
+                price_str = self.client.exchange.price_to_precision(
+                    trade.symbol, target_stop
+                )
+                target_stop = float(price_str)
+            except Exception:  # noqa: BLE001
+                pass
+
+        if side == "long":
+            tighter = target_stop > float(trade.stop)
+        else:
             tighter = target_stop < float(trade.stop)
 
         # Persist HWM/armed even if the stop is not moving yet, so a
