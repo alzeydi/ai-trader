@@ -201,6 +201,28 @@ class SignalEngine:
             if rng > 0:
                 pos = (close_1h - swing_l) / rng   # 0 = at low, 1 = at high
 
+                # Hard bound: pos outside [0, 1] means the 1h range has
+                # already broken (price closed above swing_high or below
+                # swing_low). Fading a confirmed breakout is exactly the
+                # opposite of a range-fade trade — bail out instead.
+                if pos < 0.0 or pos > 1.0:
+                    log.debug(
+                        "%s: Type C rejected, range broken (pos=%.2f)",
+                        symbol, pos,
+                    )
+                    return None
+
+                # Extra safety: require 1h price to actually be hugging its
+                # EMA50 (no strong 1h directional trend). Without this a
+                # neutral 4h with a fast 1h leg keeps producing fade signals
+                # against the active move.
+                if not near_ema50:
+                    log.debug(
+                        "%s: Type C rejected, 1h not flat (close=%.4f ema50=%.4f)",
+                        symbol, close_1h, float(ema50_1h),
+                    )
+                    return None
+
                 if pos < 0.20 and rsi_up:           # near low → long
                     proximity = 1.0 - pos / 0.20
                     strength = _score_c(proximity, float(rsi_now - rsi_prev))

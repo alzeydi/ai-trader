@@ -91,6 +91,12 @@ def size_position(
         if quantity > max_qty:
             quantity = max_qty
 
+    # Exchange minimum notional (Binance -4164). If sizing landed below the
+    # floor — typically because free margin is tiny — reject cleanly so the
+    # trader cycle continues instead of firing a doomed order.
+    if quantity * entry < settings.min_notional_usd:
+        return None
+
     if candidate.side == "long":
         sl = entry - sl_distance
         tp = entry + tp_distance

@@ -176,6 +176,16 @@ class OrderExecutor:
             return ExecutionResult(
                 success=False, paper=False, reason=f"insufficient_funds: {exc}"
             )
+        except ccxt.InvalidOrder as exc:
+            # -4164 (notional below 5 USDT) and other "won't accept this
+            # order" cases. Sizing already gates on min_notional_usd, but
+            # exchange-side step-size rounding or a stale price reference
+            # can still slip a sub-floor order through. Soft-skip.
+            log.info("skip open %s: invalid order rejected by exchange: %s",
+                     order.symbol, exc)
+            return ExecutionResult(
+                success=False, paper=False, reason=f"invalid_order: {exc}"
+            )
         entry_id = str(entry_resp.get("id") or "")
 
         # Critical: protect the freshly-opened position with a stop-loss

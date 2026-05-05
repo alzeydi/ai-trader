@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     trail_distance_usd: float = 2.5
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
+    # Binance USDT-M futures rejects any non-reduce-only order whose notional
+    # is below ~5 USDT (error -4164). Sizing rejects below this floor.
+    min_notional_usd: float = 5.0
     max_hold_hours: int = 8
 
     # ----- Safety mode -----
