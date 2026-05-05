@@ -196,19 +196,22 @@ def test_size_position_short_flips_sl_and_tp():
     assert order.risk_usd == pytest.approx(1000.0 * settings.risk_per_trade_type_b, rel=1e-3)
 
 
-def test_size_position_rejects_when_target_too_small_vs_fees():
-    """ATR tiny relative to price → tp_distance < 3 × round-trip fees."""
+def test_size_position_floors_stop_at_min_stop_pct_on_low_vol():
+    """ATR tiny relative to price → SL distance is floored at min_stop_pct of entry."""
     cand = CandidateSignal(
         symbol="BTC/USDT:USDT",
         side="long",
         entry_type="A",
         signal_strength=0.5,
         entry_price_ref=100_000.0,
-        atr_14=1.0,  # tp distance ≈ 2 USDT on 100k → far below fee floor
+        atr_14=1.0,  # raw sl_distance would be 1.5 → 0.0015 % of price
         swing_high_1h=101_000.0,
         swing_low_1h=99_000.0,
     )
-    assert size_position(cand, _account(), _veto()) is None
+    order = size_position(cand, _account(), _veto())
+    assert order is not None
+    expected_sl_dist = 100_000.0 * settings.min_stop_pct
+    assert (cand.entry_price_ref - order.stop_loss) == pytest.approx(expected_sl_dist, rel=1e-6)
 
 
 # ---------------------------------------------------------------------------

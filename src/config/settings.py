@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     max_drawdown_pct: float = 15.0
     atr_stop_multiplier: float = 1.5
     atr_take_multiplier: float = 3.0
+    # Hard floor on stop distance as a fraction of entry price. Calm symbols
+    # have ATRs that translate to <0.5 % of price, which is inside typical
+    # spread/noise — anything tighter gets stopped out by random ticks.
+    min_stop_pct: float = 0.008  # 0.8 %
     trail_enabled: bool = True
     # USD-denominated breakeven trailing. When unrealized NET profit (after
     # round-trip taker fees) reaches breakeven_activate_usd, the stop is

@@ -18,5 +18,9 @@ class CandidateSignal(BaseModel):
     signal_strength: float = Field(ge=0.0, le=1.0)
     entry_price_ref: float
     atr_14: float
+    # Higher-timeframe ATR (1h) used by Type C sizing so the stop clears
+    # typical 1h noise instead of getting nuked by 15m wiggles. Optional for
+    # backwards compatibility with backtest harness and old fixtures.
+    atr_14_1h: float | None = None
     swing_high_1h: float
     swing_low_1h: float

@@ -87,6 +87,7 @@ class SignalEngine:
         c1 = df_1h["close"]
         ema50_1h = ema(c1, 50).iloc[-1]
         close_1h = float(c1.iloc[-1])
+        atr_1h_val = float(atr14(df_1h).iloc[-1])
         swings   = swing_high_low(df_1h, lookback=20)
         sh_valid = swings["swing_high"].dropna()
         sl_valid = swings["swing_low"].dropna()
@@ -108,7 +109,7 @@ class SignalEngine:
 
         # NaN guard — any key indicator being NaN aborts
         guards = [ema50_4h, ema200_4h, rsi_4h, hist_4h.iloc[-1], hist_4h.iloc[-2],
-                  ema50_1h, rsi_now, rsi_prev, atr_val,
+                  ema50_1h, atr_1h_val, rsi_now, rsi_prev, atr_val,
                   hist_15.iloc[-1], hist_15.iloc[-2]]
         if any(pd.isna(g) for g in guards):
             log.debug("%s: one or more indicators are NaN, skipping", symbol)
@@ -146,7 +147,7 @@ class SignalEngine:
                     timestamp=now, symbol=symbol, side="long",
                     entry_type="A", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
                 )
 
         if bearish and near_ema50 and rsi_down:
@@ -161,7 +162,7 @@ class SignalEngine:
                     timestamp=now, symbol=symbol, side="short",
                     entry_type="A", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
                 )
 
         # ════════════════════════════════════════════════════════════════════
@@ -178,7 +179,7 @@ class SignalEngine:
                     timestamp=now, symbol=symbol, side="short",
                     entry_type="B", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
                 )
 
         if float(rsi_4h) < 25 and rsi_up:
@@ -190,7 +191,7 @@ class SignalEngine:
                     timestamp=now, symbol=symbol, side="long",
                     entry_type="B", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
                 )
 
         # ════════════════════════════════════════════════════════════════════
@@ -233,7 +234,7 @@ class SignalEngine:
                             timestamp=now, symbol=symbol, side="long",
                             entry_type="C", signal_strength=strength,
                             entry_price_ref=close_1h, atr_14=atr_val,
-                            swing_high_1h=swing_h, swing_low_1h=swing_l,
+                            swing_high_1h=swing_h, swing_low_1h=swing_l, atr_14_1h=atr_1h_val,
                         )
 
                 if pos > 0.80 and rsi_down:         # near high → short
@@ -246,7 +247,7 @@ class SignalEngine:
                             timestamp=now, symbol=symbol, side="short",
                             entry_type="C", signal_strength=strength,
                             entry_price_ref=close_1h, atr_14=atr_val,
-                            swing_high_1h=swing_h, swing_low_1h=swing_l,
+                            swing_high_1h=swing_h, swing_low_1h=swing_l, atr_14_1h=atr_1h_val,
                         )
 
         return None

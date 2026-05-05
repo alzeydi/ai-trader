@@ -62,12 +62,29 @@ def size_position(
     risk_pct = getattr(settings, _RISK_BY_TYPE[candidate.entry_type])
     risk_usd = account.equity * risk_pct
 
-    sl_distance = candidate.atr_14 * settings.atr_stop_multiplier
-    tp_distance = sl_distance * (settings.atr_take_multiplier / settings.atr_stop_multiplier)
+    # Type C trades the 1h range, so its stop must clear 1h noise — using
+    # the 15m ATR here produced sub-1% stops that got nuked on the next
+    # candle. Fall back to atr_14 if the 1h figure isn't populated (legacy
+    # fixtures / backtest harness).
+    atr = (
+        candidate.atr_14_1h
+        if candidate.entry_type == "C" and candidate.atr_14_1h is not None
+        else candidate.atr_14
+    )
+    sl_distance = atr * settings.atr_stop_multiplier
 
     entry = candidate.entry_price_ref
     if entry <= 0 or sl_distance <= 0:
         return None
+
+    # Volatility floor: on calm symbols even a 1h ATR can resolve to ~0.3 %
+    # of price, which is well inside typical bid/ask noise. Force the stop
+    # to clear at least `min_stop_pct` of the entry price.
+    min_stop_distance = entry * settings.min_stop_pct
+    if sl_distance < min_stop_distance:
+        sl_distance = min_stop_distance
+
+    tp_distance = sl_distance * (settings.atr_take_multiplier / settings.atr_stop_multiplier)
 
     # Round-trip fee = 2 × taker fee. Reject if the target is smaller than 3×
     # round-trip — anything tighter is dominated by transaction cost.
