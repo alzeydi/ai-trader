@@ -77,6 +77,25 @@ def _close_stale_paper_trades(session_factory) -> int:
     return len(stale)
 
 
+def _filter_known_symbols(binance, symbols, log) -> list[str]:
+    """Drop symbols the exchange does not list, warn loudly. Avoids spamming
+    BadSymbol errors every cycle for typos or pairs that exist on mainnet
+    but not on demo-fapi.
+    """
+    try:
+        binance.exchange.load_markets()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not preload markets for validation: %s", exc)
+        return symbols
+    known = set(binance.exchange.markets.keys())
+    kept, dropped = [], []
+    for s in symbols:
+        (kept if s in known else dropped).append(s)
+    if dropped:
+        log.warning("dropping %d unlisted symbol(s): %s", len(dropped), dropped)
+    return kept
+
+
 def _load_symbols() -> list[str]:
     path = Path(settings.symbols_yaml)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -134,7 +153,8 @@ def main() -> None:
     monitor_thread.start()
 
     symbols = _load_symbols()
-    log.info("trading universe: %s", symbols)
+    symbols = _filter_known_symbols(binance, symbols, log)
+    log.info("trading universe (%d): %s", len(symbols), symbols)
 
     while True:
         append_equity(equity_usd=settings.equity_usd)

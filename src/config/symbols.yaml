@@ -160,11 +160,11 @@ symbols:
     tick_precision: 5
     quantity_precision: 0
 
-  - symbol: ICP/USDT:USDT
+  - symbol: SAND/USDT:USDT
     enabled: true
     min_notional_usdt: 10
-    tick_precision: 3
-    quantity_precision: 2
+    tick_precision: 4
+    quantity_precision: 0
 
   - symbol: IMX/USDT:USDT
     enabled: true
@@ -196,7 +196,7 @@ symbols:
     tick_precision: 4
     quantity_precision: 1
 
-  - symbol: RNDR/USDT:USDT
+  - symbol: RENDER/USDT:USDT
     enabled: true
     min_notional_usdt: 10
     tick_precision: 4
@@ -232,10 +232,10 @@ symbols:
     tick_precision: 4
     quantity_precision: 1
 
-  - symbol: PEPE/USDT:USDT
+  - symbol: 1000PEPE/USDT:USDT
     enabled: true
     min_notional_usdt: 10
-    tick_precision: 8
+    tick_precision: 7
     quantity_precision: 0
 
   - symbol: WIF/USDT:USDT
