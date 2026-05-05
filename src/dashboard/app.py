@@ -28,7 +28,6 @@ from src.config import settings
 from src.persistence.db import (
     AIDecision,
     EquitySnapshot,
-    Position,
     Trade,
     make_session_factory,
 )
@@ -91,13 +90,24 @@ def load_decisions() -> pd.DataFrame:
 
 @st.cache_data(ttl=10, show_spinner=False)
 def load_positions() -> pd.DataFrame:
+    """Open positions = Trade rows with closed_at IS NULL.
+
+    The bot uses Trade as the single source of truth for live positions;
+    the legacy Position table is unused.
+    """
     sf = _session_factory()
     with sf() as s:
-        rows = s.execute(select(Position)).scalars().all()
+        rows = s.execute(
+            select(Trade).where(Trade.closed_at.is_(None))
+        ).scalars().all()
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame([_row_to_dict(r) for r in rows])
-    for col in ("opened_at", "updated_at"):
+    if "entry" in df.columns and "entry_price" not in df.columns:
+        df["entry_price"] = df["entry"]
+    if "stop" in df.columns and "stop_loss" not in df.columns:
+        df["stop_loss"] = df["stop"]
+    for col in ("opened_at", "closed_at", "last_invalidation_check_at"):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
     return df
@@ -366,9 +376,9 @@ def page_positions() -> None:
         return
     cols = [
         c for c in [
-            "symbol", "side", "quantity", "entry_price", "mark_price",
-            "leverage", "margin_usd", "stop_loss", "take_profit",
-            "unrealized_pnl", "opened_at", "updated_at",
+            "id", "symbol", "side", "type", "quantity", "entry_price",
+            "leverage", "stop_loss", "take_profit", "risk_usd",
+            "llm_confidence", "paper", "opened_at",
         ] if c in df.columns
     ]
     st.dataframe(df[cols], width="stretch", hide_index=True)
