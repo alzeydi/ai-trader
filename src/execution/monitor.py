@@ -117,6 +117,11 @@ class PositionMonitor:
         """One pass over all open trades; returns symbols that were closed."""
         closed_symbols: list[str] = []
         for trade in list_open_trades(self.session_factory):
+            if settings.trail_enabled and not trade.paper:
+                try:
+                    self._update_trail(trade)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("trail update failed for %s: %s", trade.symbol, exc)
             try:
                 reason = self._evaluate(trade)
             except Exception as exc:  # noqa: BLE001
@@ -127,6 +132,75 @@ class PositionMonitor:
             self._close_and_record(trade, reason)
             closed_symbols.append(trade.symbol)
         return closed_symbols
+
+    # ------------------------------------------------------------------
+    def _update_trail(self, trade: Trade) -> None:
+        """Arm and tighten a trailing stop based on R-multiples of profit."""
+        if self.client is None or self.executor is None:
+            return
+        original = trade.original_stop or trade.stop
+        if original is None or trade.entry is None:
+            return
+        r = abs(float(trade.entry) - float(original))
+        if r <= 0:
+            return
+
+        try:
+            ticker = self.client.fetch_ticker(trade.symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("trail: mark fetch failed for %s: %s", trade.symbol, exc)
+            return
+        last = ticker.get("last")
+        if last is None:
+            return
+        mark = float(last)
+
+        side = (trade.side or "").lower()
+        activate_at_profit = settings.trail_activate_r * r
+        trail_distance = settings.trail_distance_r * r
+
+        if side == "long":
+            profit = mark - float(trade.entry)
+        else:
+            profit = float(trade.entry) - mark
+        if profit < activate_at_profit:
+            return
+
+        # Update high-water mark.
+        hwm = trade.trail_high_water
+        if side == "long":
+            new_hwm = max(float(hwm or mark), mark)
+            new_stop = new_hwm - trail_distance
+            tighter = new_stop > float(trade.stop)
+        else:
+            new_hwm = min(float(hwm or mark), mark)
+            new_stop = new_hwm + trail_distance
+            tighter = new_stop < float(trade.stop)
+
+        # Persist new HWM/armed even if stop isn't moving yet.
+        if hwm is None or new_hwm != float(hwm) or not trade.trail_armed:
+            with self.session_factory() as s:
+                row = s.get(Trade, trade.id)
+                if row is not None:
+                    row.trail_high_water = float(new_hwm)
+                    row.trail_armed = True
+                    s.commit()
+
+        if not tighter:
+            return
+
+        old_stop = float(trade.stop)
+        if not self.executor.replace_stop(trade.id, new_stop):
+            return
+        if self.notifier is not None:
+            try:
+                self.notifier.send(
+                    f"🔒 *TRAIL* `{trade.symbol}` {side.upper()} "
+                    f"SL `{old_stop:.6f}` → `{new_stop:.6f}` "
+                    f"(HWM `{new_hwm:.6f}`)"
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.debug("trail notify failed: %s", exc)
 
     def run_forever(self, interval_sec: int | None = None) -> None:
         """Block forever, ticking every `interval_sec` (default from settings)."""

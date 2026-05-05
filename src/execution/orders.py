@@ -317,6 +317,61 @@ class OrderExecutor:
             reason=reason,
         )
 
+    # ------------------------------------------------------------------
+    def replace_stop(self, trade_id: int, new_stop: float) -> bool:
+        """Cancel the live SL order and place a tighter one. Update DB.
+
+        Returns True on success. Used by the trailing-stop logic in the
+        position monitor. Paper trades just update the DB row.
+        """
+        with self.session_factory() as s:
+            row = s.execute(select(Trade).where(Trade.id == trade_id)).scalars().first()
+            if row is None or row.closed_at is not None:
+                return False
+            symbol = row.symbol
+            side = row.side
+            qty = float(row.quantity)
+            old_oid = row.stop_order_id
+
+        if self.paper or self.client is None:
+            new_oid = ""
+        else:
+            ex = self.client.exchange
+            try:
+                price_str = ex.price_to_precision(symbol, new_stop)
+                new_stop_priced = float(price_str)
+            except Exception:  # noqa: BLE001
+                new_stop_priced = float(new_stop)
+            exit_side = "sell" if side == "long" else "buy"
+            try:
+                resp = ex.create_order(
+                    symbol, "STOP_MARKET", exit_side, qty, None,
+                    {"stopPrice": new_stop_priced, "reduceOnly": True},
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("replace_stop: new SL placement failed for %s: %s", symbol, exc)
+                return False
+            new_oid = str(resp.get("id") or "")
+            if old_oid:
+                try:
+                    ex.cancel_order(old_oid, symbol)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("replace_stop: cancel old SL %s skipped: %s", old_oid, exc)
+            new_stop = new_stop_priced
+
+        with self.session_factory() as s:
+            row = s.execute(select(Trade).where(Trade.id == trade_id)).scalars().first()
+            if row is None:
+                return False
+            row.stop = float(new_stop)
+            row.stop_order_id = new_oid
+            s.commit()
+        log.info(
+            "trail: SL tightened %s side=%s -> %.6f trade_id=%d",
+            symbol, side, new_stop, trade_id,
+        )
+        return True
+
     # --- shared helpers ----------------------------------------------
     def _record_open(
         self,
@@ -334,6 +389,7 @@ class OrderExecutor:
                 type=order.entry_type,
                 entry=order.entry_price,
                 stop=order.stop_loss,
+                original_stop=order.stop_loss,
                 take_profit=order.take_profit,
                 quantity=order.quantity,
                 leverage=order.leverage,

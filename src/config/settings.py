@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     max_drawdown_pct: float = 15.0
     atr_stop_multiplier: float = 1.5
     atr_take_multiplier: float = 3.0
+    trail_enabled: bool = True
+    trail_activate_r: float = 1.0    # arm trailing once profit ≥ N × initial R
+    trail_distance_r: float = 0.5    # trail this many R below the high-water mark
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
     max_hold_hours: int = 8
