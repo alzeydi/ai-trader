@@ -67,6 +67,12 @@ class Trade(Base):
     invalidation_signal = Column(Text, nullable=True)
     llm_confidence = Column(Float, default=0.0)
     last_invalidation_check_at = Column(DateTime(timezone=True), nullable=True)
+    # Trailing stop. `original_stop` preserves the entry-time SL so we can
+    # always recompute R = |entry - original_stop|. `stop` is what's live on
+    # the exchange and may be tightened by the trailing logic.
+    original_stop = Column(Float, nullable=True)
+    trail_armed = Column(Boolean, default=False)
+    trail_high_water = Column(Float, nullable=True)
 
     # --- spec aliases ----------------------------------------------------
     @property
@@ -220,7 +226,25 @@ def make_engine(path: Path | None = None):
     db_path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(f"sqlite:///{db_path}", future=True)
     Base.metadata.create_all(engine)
+    _ensure_trade_columns(engine)
     return engine
+
+
+def _ensure_trade_columns(engine) -> None:
+    """SQLite create_all() adds new tables but not new columns to existing
+    ones. Ensure trailing-stop columns exist on the persistent DB.
+    """
+    new_cols = {
+        "original_stop": "REAL",
+        "trail_armed": "BOOLEAN DEFAULT 0",
+        "trail_high_water": "REAL",
+    }
+    with engine.begin() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(trades)").fetchall()
+        existing = {row[1] for row in rows}
+        for col, ddl in new_cols.items():
+            if col not in existing:
+                conn.exec_driver_sql(f"ALTER TABLE trades ADD COLUMN {col} {ddl}")
 
 
 SessionFactory = sessionmaker[Session]
