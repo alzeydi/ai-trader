@@ -57,8 +57,15 @@ class Settings(BaseSettings):
     atr_stop_multiplier: float = 1.5
     atr_take_multiplier: float = 3.0
     trail_enabled: bool = True
-    trail_activate_r: float = 1.0    # arm trailing once profit ≥ N × initial R
-    trail_distance_r: float = 0.5    # trail this many R below the high-water mark
+    # USD-denominated breakeven trailing. When unrealized NET profit (after
+    # round-trip taker fees) reaches breakeven_activate_usd, the stop is
+    # moved to lock in at least breakeven_lock_usd of NET profit. After
+    # that the stop continues to follow the high-water profit, never
+    # giving back more than trail_distance_usd, and never loosening below
+    # the locked-in floor.
+    breakeven_activate_usd: float = 5.0
+    breakeven_lock_usd: float = 2.5
+    trail_distance_usd: float = 2.5
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
     max_hold_hours: int = 8
