@@ -20,7 +20,7 @@ import yaml
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
-from src.execution.monitor import PositionMonitor
+from src.execution.monitor import PositionMonitor, fetch_open_positions
 from src.execution.orders import OrderExecutor
 from src.execution.trader import Trader
 from src.llm.client import ClaudeClient
@@ -54,6 +54,19 @@ def _notify_startup(notifier: TelegramNotifier) -> None:
         f"Testnet: `{settings.binance_testnet}` | Dry-run: `{settings.dry_run}`"
         f"{deploy_suffix}"
     )
+
+
+def _live_unrealized_pnl(binance) -> float:
+    """Sum unrealized PnL across all open positions reported by the exchange.
+
+    Returns 0.0 on any failure (network, auth) so the equity curve still
+    advances with realized PnL even if the snapshot is briefly stale.
+    """
+    try:
+        snaps = fetch_open_positions(binance)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return float(sum(s.unrealized_pnl for s in snaps))
 
 
 def _close_stale_paper_trades(session_factory) -> int:
@@ -163,11 +176,15 @@ def main() -> None:
 
     while True:
         realized = daily_realized_pnl(session_factory)
-        append_equity(equity_usd=settings.equity_usd, realized=realized)
+        unrealized = _live_unrealized_pnl(binance) if not settings.paper_trading else 0.0
+        equity = float(settings.equity_usd) + realized + unrealized
+        append_equity(equity_usd=equity, realized=realized, unrealized=unrealized)
         append_equity_snapshot(
             session_factory,
-            equity_usd=settings.equity_usd,
+            equity_usd=equity,
+            balance_usd=float(settings.equity_usd) + realized,
             realized_pnl=realized,
+            unrealized_pnl=unrealized,
         )
         results = trader.run_cycle(symbols)
         accepted = sum(1 for r in results if r.accepted)
