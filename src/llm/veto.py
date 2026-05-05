@@ -22,9 +22,9 @@ log = logging.getLogger(__name__)
 
 # Thresholds mirror the HARD RULES section of prompts/system.txt.
 # Funding rate is expressed in percent (matches user.j2 rendering).
-MAX_OPEN_POSITIONS = 2
-MAX_DAILY_LOSS_PCT = -3.0
-MAX_LOSSES_STREAK = 3
+# MAX_OPEN_POSITIONS / MAX_DAILY_LOSS_PCT / MAX_LOSSES_STREAK are read from
+# settings at call time so env var changes (e.g. Railway Variables) take
+# effect on next deploy without code edits.
 FUNDING_OVERHEATED_PCT = 0.05
 LIQUIDATION_SQUEEZE_USD = 50_000_000.0
 
@@ -85,11 +85,11 @@ def preflight_check(
     account: VetoAccount,
 ) -> str | None:
     """Return the name of the violated hard rule, or `None` if all pass."""
-    if account.open_positions >= MAX_OPEN_POSITIONS:
+    if account.open_positions >= settings.max_open_positions:
         return "open_positions"
-    if account.daily_pnl_pct <= MAX_DAILY_LOSS_PCT:
+    if account.daily_pnl_pct <= -float(settings.max_daily_loss_pct):
         return "daily_pnl"
-    if account.losses_streak >= MAX_LOSSES_STREAK:
+    if account.losses_streak >= settings.safety_max_consecutive_losses:
         return "losses_streak"
     if candidate.signal_strength < settings.signal_min_confidence:
         return "signal_strength_below_floor"
