@@ -79,6 +79,18 @@ def size_position(
     if quantity <= 0:
         return None
 
+    # Cap quantity by free margin so we never request a notional the wallet
+    # cannot back. Required margin per contract = entry / leverage; reserve
+    # ~10 % headroom for taker fees, slippage and price drift between sizing
+    # and execution. Skipped when free margin is unknown (backtest/tests).
+    if account.free_margin_usd is not None and settings.leverage > 0:
+        max_notional = account.free_margin_usd * settings.leverage * 0.9
+        max_qty = max_notional / entry
+        if max_qty <= 0:
+            return None
+        if quantity > max_qty:
+            quantity = max_qty
+
     if candidate.side == "long":
         sl = entry - sl_distance
         tp = entry + tp_distance

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+import ccxt
+
 from src.config import settings
 from src.execution.types import ExecutionResult, TradeOrder
 from src.persistence.db import SessionFactory, Trade, make_session_factory
@@ -133,13 +135,47 @@ class OrderExecutor:
         except Exception as exc:  # noqa: BLE001
             log.warning("set_leverage failed for %s: %s", order.symbol, exc)
 
+        # Pre-flight margin check: sizing already caps notional by free
+        # margin, but the wallet can have moved (other open positions, fees)
+        # between sizing and execution. Skip cleanly instead of blowing up
+        # with a -2019 traceback.
+        required_margin = (order.quantity * order.entry_price) / max(order.leverage, 1)
+        try:
+            bal = ex.fetch_balance()
+            usdt = (bal.get("USDT") or {}) if isinstance(bal, dict) else {}
+            free = float(usdt.get("free") or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pre-flight fetch_balance failed for %s: %s", order.symbol, exc)
+            free = float("inf")  # don't block on a transient balance error
+        if free < required_margin:
+            log.info(
+                "skip open %s: insufficient margin (need=%.2f free=%.2f)",
+                order.symbol, required_margin, free,
+            )
+            return ExecutionResult(
+                success=False,
+                paper=False,
+                reason=f"insufficient_margin: need={required_margin:.2f} free={free:.2f}",
+            )
+
         entry_side = "buy" if order.side == "long" else "sell"
         exit_side = "sell" if order.side == "long" else "buy"
 
-        entry_resp = ex.create_order(
-            order.symbol, "market", entry_side, order.quantity,
-            None, {"reduceOnly": False},
-        )
+        try:
+            entry_resp = ex.create_order(
+                order.symbol, "market", entry_side, order.quantity,
+                None, {"reduceOnly": False},
+            )
+        except ccxt.InsufficientFunds as exc:
+            # Race with another fill that consumed margin between the
+            # pre-flight check and this call. Treat as soft skip rather than
+            # an exception so the trader cycle can continue with the rest of
+            # the universe.
+            log.info("skip open %s: exchange reported insufficient funds: %s",
+                     order.symbol, exc)
+            return ExecutionResult(
+                success=False, paper=False, reason=f"insufficient_funds: {exc}"
+            )
         entry_id = str(entry_resp.get("id") or "")
 
         # Critical: protect the freshly-opened position with a stop-loss

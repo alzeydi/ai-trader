@@ -182,7 +182,24 @@ class Trader:
         }
 
     def _account_state(self) -> AccountState:
+        # Live balance from the exchange takes precedence over the static
+        # `settings.equity_usd` fallback. Without this, sizing computes risk
+        # against a phantom $1000 even when the demo wallet holds far less,
+        # which produces orders the exchange rejects with -2019.
         equity = float(self.equity_usd)
+        free_margin: float | None = None
+        try:
+            bal = self.binance.fetch_balance()
+            usdt = (bal.get("USDT") or {}) if isinstance(bal, dict) else {}
+            total = usdt.get("total")
+            free = usdt.get("free")
+            if total is not None:
+                equity = float(total)
+            if free is not None:
+                free_margin = float(free)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("fetch_balance failed, using static equity_usd: %s", exc)
+
         open_pos = count_open_trades(self.session_factory)
         realized = daily_realized_pnl(self.session_factory)
         daily_pct = (realized / equity * 100.0) if equity > 0 else 0.0
@@ -191,6 +208,7 @@ class Trader:
             open_positions=int(open_pos),
             daily_pnl_pct=daily_pct,
             consecutive_losses=self.safety.consecutive_losses,
+            free_margin_usd=free_margin,
         )
 
     # ------------------------------------------------------------------

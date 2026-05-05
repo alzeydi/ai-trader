@@ -14,3 +14,7 @@ class AccountState(BaseModel):
     open_positions: int = 0
     daily_pnl_pct: float = 0.0  # percent, e.g. -1.5 == -1.5 %
     consecutive_losses: int = 0
+    # Free USDT margin available on the futures wallet. None means "unknown"
+    # and disables the margin-cap branch in `size_position` (used by backtest
+    # and unit tests where there is no live wallet).
+    free_margin_usd: float | None = None
