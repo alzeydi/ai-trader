@@ -136,6 +136,34 @@ class OrderExecutor:
         except Exception as exc:  # noqa: BLE001
             log.warning("set_leverage failed for %s: %s", order.symbol, exc)
 
+        # Pre-open sweep: idempotency already ensured no DB row is open for
+        # this symbol, so any reduce-only order still on the book is an
+        # orphan from a prior position whose close path failed to clean up
+        # (close_live sweep can lose to a flaky fetch_open_orders, or the
+        # trader cycle can re-enter before the monitor closes the previous
+        # row). Cancelling them now prevents a stale SL/TP from binding to
+        # the brand-new position we're about to open.
+        try:
+            stale = ex.fetch_open_orders(order.symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pre-open sweep: fetch_open_orders %s failed: %s",
+                        order.symbol, exc)
+            stale = []
+        for o in stale:
+            info = o.get("info") or {}
+            if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
+                continue
+            oid = str(o.get("id") or "")
+            if not oid:
+                continue
+            try:
+                ex.cancel_order(oid, order.symbol)
+                log.info("pre-open sweep: cancelled orphan %s on %s",
+                         oid, order.symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("pre-open sweep: cancel %s on %s failed: %s",
+                            oid, order.symbol, exc)
+
         # Pre-flight margin check: sizing already caps notional by free
         # margin, but the wallet can have moved (other open positions, fees)
         # between sizing and execution. Skip cleanly instead of blowing up
