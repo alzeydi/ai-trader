@@ -137,7 +137,13 @@ def _wipe_history(session_factory) -> bool:
     if flag not in ("1", "true", "yes", "on"):
         return False
     log = logging.getLogger("main")
-    tables = ("trades", "ai_decisions", "equity_snapshots", "positions")
+    tables = (
+        "trades",
+        "ai_decisions",
+        "equity_snapshots",
+        "positions",
+        "safety_state",
+    )
     with session_factory() as s:
         for tbl in tables:
             try:
