@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
+from sqlalchemy import text
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
@@ -125,6 +126,33 @@ def _live_unrealized_pnl(binance) -> float:
     return float(sum(s.unrealized_pnl for s in snaps))
 
 
+def _wipe_history(session_factory) -> bool:
+    """One-shot reset of all stat-bearing tables, gated by RESET_DB_ON_START.
+
+    Set RESET_DB_ON_START=true in Railway Variables, redeploy once, then
+    flip it back to false. The flag is intentionally an env var (not a
+    setting) so it can't be left on accidentally across many deploys.
+    """
+    flag = os.getenv("RESET_DB_ON_START", "").strip().lower()
+    if flag not in ("1", "true", "yes", "on"):
+        return False
+    log = logging.getLogger("main")
+    tables = ("trades", "ai_decisions", "equity_snapshots", "positions")
+    with session_factory() as s:
+        for tbl in tables:
+            try:
+                s.execute(text(f"DELETE FROM {tbl}"))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("wipe %s skipped: %s", tbl, exc)
+        s.commit()
+    log.warning(
+        "RESET_DB_ON_START active — wiped %s. UNSET the env var "
+        "after this deploy to avoid wiping again on the next restart.",
+        ", ".join(tables),
+    )
+    return True
+
+
 def _close_stale_paper_trades(session_factory) -> int:
     """When switching from paper to live, paper trades persisted in SQLite
     keep counting toward the open-positions cap and block real entries.
@@ -189,9 +217,11 @@ def main() -> None:
     )
 
     session_factory = make_session_factory()
+    wiped = _wipe_history(session_factory)
     _close_stale_paper_trades(session_factory)
     binance = BinanceClient()
-    _reconcile_open_trades(session_factory, binance, log)
+    if not wiped:
+        _reconcile_open_trades(session_factory, binance, log)
     engine = SignalEngine(client=binance)
     llm_client = ClaudeClient()
     notifier = TelegramNotifier()
