@@ -47,7 +47,8 @@ class OrderExecutor:
                 select(Trade)
                 .where(Trade.symbol == order.symbol)
                 .where(Trade.closed_at.is_(None))
-            ).scalar_one_or_none()
+                .order_by(Trade.opened_at.desc())
+            ).scalars().first()
             if existing is not None:
                 log.info(
                     "skip open: %s already has open trade id=%d (idempotent)",
@@ -91,7 +92,7 @@ class OrderExecutor:
                 .where(Trade.symbol == symbol)
                 .where(Trade.closed_at.is_(None))
                 .order_by(Trade.opened_at.desc())
-            ).scalar_one_or_none()
+            ).scalars().first()
             if row is None:
                 return ExecutionResult(
                     success=False, paper=True, reason=f"no open paper trade for {symbol}"
@@ -221,7 +222,7 @@ class OrderExecutor:
                 .where(Trade.symbol == symbol)
                 .where(Trade.closed_at.is_(None))
                 .order_by(Trade.opened_at.desc())
-            ).scalar_one_or_none()
+            ).scalars().first()
             if row is None:
                 return ExecutionResult(
                     success=False, paper=False, reason=f"no open trade for {symbol}"
