@@ -10,8 +10,10 @@ Wires the four runtime components together:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -33,6 +35,19 @@ def _configure_logging() -> None:
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+
+def _notify_startup(notifier: TelegramNotifier) -> None:
+    ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    deploy_id = os.getenv("RAILWAY_DEPLOYMENT_ID") or os.getenv("RAILWAY_GIT_COMMIT_SHA", "")
+    deploy_suffix = f"\nDeploy: `{deploy_id[:12]}`" if deploy_id else ""
+    notifier.send(
+        "🚀 *ai-trader started*\n"
+        f"`{ts}`\n"
+        f"Mode: `{settings.trading_mode}` | Paper: `{settings.paper_trading}` | "
+        f"Testnet: `{settings.binance_testnet}` | Dry-run: `{settings.dry_run}`"
+        f"{deploy_suffix}"
     )
 
 
@@ -59,6 +74,7 @@ def main() -> None:
     engine = SignalEngine(client=binance)
     llm_client = ClaudeClient()
     notifier = TelegramNotifier()
+    _notify_startup(notifier)
     safety = SafetyMode(session_factory=session_factory, notifier=notifier)
     executor = OrderExecutor(
         client=binance, paper=settings.paper_trading, session_factory=session_factory
