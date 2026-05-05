@@ -249,3 +249,123 @@ symbols:
     min_notional_usdt: 10
     tick_precision: 3
     quantity_precision: 1
+
+  - symbol: 1000SHIB/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
+
+  - symbol: 1000BONK/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
+
+  - symbol: 1000FLOKI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
+
+  - symbol: MANA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 0
+
+  - symbol: ICP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: AR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: BLUR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: JUP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: PYTH/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: JTO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ENA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: W/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: STRK/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: DYDX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: MKR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 1
+    quantity_precision: 3
+
+  - symbol: ZRO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: TAO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 3
+
+  - symbol: ETHFI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ENS/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: SUSHI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 0
