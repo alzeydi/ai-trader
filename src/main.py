@@ -56,6 +56,62 @@ def _notify_startup(notifier: TelegramNotifier) -> None:
     )
 
 
+def _reconcile_open_trades(session_factory, binance, log) -> None:
+    """At startup, sync the DB's open Trade rows with the exchange.
+
+    Two classes of zombie can survive a restart:
+      1) Multiple open Trade rows for the same symbol — left over from
+         pre-idempotency-fix duplicate opens. Keep one most-recent per
+         symbol that has an exchange position; close the rest.
+      2) Open Trade rows for symbols the exchange has NO position on —
+         the position was closed (SL/TP filled) but our process died
+         before _close_live could mark the row closed.
+
+    Both cases are closed with close_price = entry (no PnL info), reason
+    "reconciled_*". The next monitor tick will re-evaluate the survivors
+    against the exchange and close them properly if needed.
+    """
+    if settings.paper_trading:
+        return
+    try:
+        snaps = fetch_open_positions(binance)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("reconcile: fetch_open_positions failed, skipping: %s", exc)
+        return
+    exchange_symbols = {s.symbol for s in snaps if s.quantity > 0}
+
+    now = datetime.now(tz=timezone.utc)
+    closed_reconciled = 0
+    closed_orphans = 0
+    with session_factory() as s:
+        rows = s.query(Trade).filter(Trade.closed_at.is_(None)).order_by(
+            Trade.symbol, Trade.opened_at.desc()
+        ).all()
+        seen_symbols: set[str] = set()
+        for row in rows:
+            sym = row.symbol
+            if sym not in exchange_symbols:
+                row.closed_at = now
+                row.close_price = row.entry
+                row.close_reason = "reconciled_no_exchange_position"
+                closed_orphans += 1
+                continue
+            if sym in seen_symbols:
+                row.closed_at = now
+                row.close_price = row.entry
+                row.close_reason = "reconciled_duplicate"
+                closed_reconciled += 1
+                continue
+            seen_symbols.add(sym)
+        if closed_reconciled or closed_orphans:
+            s.commit()
+            log.info(
+                "startup: reconciled DB with exchange — %d duplicates, "
+                "%d orphans (no exchange position) closed",
+                closed_reconciled, closed_orphans,
+            )
+
+
 def _live_unrealized_pnl(binance) -> float:
     """Sum unrealized PnL across all open positions reported by the exchange.
 
@@ -135,6 +191,7 @@ def main() -> None:
     session_factory = make_session_factory()
     _close_stale_paper_trades(session_factory)
     binance = BinanceClient()
+    _reconcile_open_trades(session_factory, binance, log)
     engine = SignalEngine(client=binance)
     llm_client = ClaudeClient()
     notifier = TelegramNotifier()
