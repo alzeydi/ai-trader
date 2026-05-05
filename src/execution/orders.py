@@ -189,12 +189,34 @@ class OrderExecutor:
             )
         entry_id = str(entry_resp.get("id") or "")
 
+        # Anchor SL/TP to the actual fill, not the stale candle reference.
+        # Without this, a small adverse move between signal generation and
+        # market fill makes the planned SL sit on the wrong side of the
+        # fill price, the exchange rejects with -2021 "Order would
+        # immediately trigger", and the rollback bleeds the round-trip
+        # spread + slippage. Sizing's distance is preserved; only the
+        # anchor point moves.
+        fill_price = float(entry_resp.get("average") or 0.0) or order.entry_price
+        sl_distance = abs(order.entry_price - order.stop_loss)
+        tp_distance = abs(order.take_profit - order.entry_price)
+        if order.side == "long":
+            sl_price = fill_price - sl_distance
+            tp_price = fill_price + tp_distance
+        else:
+            sl_price = fill_price + sl_distance
+            tp_price = fill_price - tp_distance
+        try:
+            sl_price = float(ex.price_to_precision(order.symbol, sl_price))
+            tp_price = float(ex.price_to_precision(order.symbol, tp_price))
+        except Exception:  # noqa: BLE001
+            pass
+
         # Critical: protect the freshly-opened position with a stop-loss
         # before doing anything else. If the SL placement fails (e.g.
         # -2021 "Order would immediately trigger" because the market
         # moved past our stop between signal and order) we MUST roll the
         # entry back. A naked perp position is not acceptable.
-        sl_params: dict[str, Any] = {"stopPrice": order.stop_loss, "reduceOnly": True}
+        sl_params: dict[str, Any] = {"stopPrice": sl_price, "reduceOnly": True}
         try:
             sl_resp = ex.create_order(
                 order.symbol, "STOP_MARKET", exit_side, order.quantity, None, sl_params
@@ -231,7 +253,7 @@ class OrderExecutor:
         # TP failure is non-fatal: SL still protects downside, monitor's
         # max-hold and invalidation paths will still close the trade.
         tp_id = ""
-        tp_params: dict[str, Any] = {"stopPrice": order.take_profit, "reduceOnly": True}
+        tp_params: dict[str, Any] = {"stopPrice": tp_price, "reduceOnly": True}
         try:
             tp_resp = ex.create_order(
                 order.symbol, "TAKE_PROFIT_MARKET", exit_side, order.quantity,
@@ -250,6 +272,9 @@ class OrderExecutor:
             entry_order_id=entry_id,
             stop_order_id=sl_id,
             take_order_id=tp_id,
+            entry_override=fill_price,
+            stop_override=sl_price,
+            take_override=tp_price,
         )
         return ExecutionResult(
             success=True,
@@ -501,16 +526,22 @@ class OrderExecutor:
         entry_order_id: str | None = None,
         stop_order_id: str | None = None,
         take_order_id: str | None = None,
+        entry_override: float | None = None,
+        stop_override: float | None = None,
+        take_override: float | None = None,
     ) -> int:
         with self.session_factory() as s:
+            entry_val = entry_override if entry_override is not None else order.entry_price
+            stop_val = stop_override if stop_override is not None else order.stop_loss
+            tp_val = take_override if take_override is not None else order.take_profit
             row = Trade(
                 symbol=order.symbol,
                 side=order.side,
                 type=order.entry_type,
-                entry=order.entry_price,
-                stop=order.stop_loss,
-                original_stop=order.stop_loss,
-                take_profit=order.take_profit,
+                entry=entry_val,
+                stop=stop_val,
+                original_stop=stop_val,
+                take_profit=tp_val,
                 quantity=order.quantity,
                 leverage=order.leverage,
                 risk_usd=order.risk_usd,
