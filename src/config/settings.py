@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr = Field(default=SecretStr(""))
     claude_model: str = "claude-opus-4-7"
     claude_max_tokens: int = 2048
-    claude_temperature: float = 0.0
 
     # ----- Telegram -----
     telegram_bot_token: SecretStr = Field(default=SecretStr(""))
