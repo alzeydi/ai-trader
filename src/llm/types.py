@@ -21,11 +21,11 @@ class VetoContext(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    funding_rate_now: float = 0.0
+    funding_rate_now: float | None = None
     funding_rate_8h_avg: float | None = None
     oi_delta_1h_pct: float | None = None
-    liq_long: float = 0.0
-    liq_short: float = 0.0
+    liq_long: float | None = None
+    liq_short: float | None = None
     btc_dominance: float | None = None
     btc_direction: Literal["up", "down", "flat"] | None = None
 
