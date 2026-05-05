@@ -26,7 +26,12 @@ from src.execution.trader import Trader
 from src.llm.client import ClaudeClient
 from src.notify.telegram import TelegramNotifier
 from src.persistence.csv_writer import append_equity
-from src.persistence.db import Trade, make_session_factory
+from src.persistence.db import (
+    Trade,
+    append_equity_snapshot,
+    daily_realized_pnl,
+    make_session_factory,
+)
 from src.risk.safety_mode import SafetyMode
 from src.signal.engine import SignalEngine
 
@@ -157,7 +162,13 @@ def main() -> None:
     log.info("trading universe (%d): %s", len(symbols), symbols)
 
     while True:
-        append_equity(equity_usd=settings.equity_usd)
+        realized = daily_realized_pnl(session_factory)
+        append_equity(equity_usd=settings.equity_usd, realized=realized)
+        append_equity_snapshot(
+            session_factory,
+            equity_usd=settings.equity_usd,
+            realized_pnl=realized,
+        )
         results = trader.run_cycle(symbols)
         accepted = sum(1 for r in results if r.accepted)
         log.info("cycle complete: %d processed, %d accepted", len(results), accepted)
