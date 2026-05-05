@@ -369,3 +369,243 @@ symbols:
     min_notional_usdt: 10
     tick_precision: 4
     quantity_precision: 0
+
+  - symbol: AXS/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: CHZ/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: XLM/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: EOS/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: FLOW/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: GALA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: GMX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: ROSE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: ZIL/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: SNX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: COMP/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: KAVA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: 1INCH/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: BAL/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: YFI/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 0
+    quantity_precision: 4
+
+  - symbol: CFX/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: DASH/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: ZEC/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: BAT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 0
+
+  - symbol: WAVES/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: KSM/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 1
+
+  - symbol: ANKR/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: SKL/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: WLD/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: PENDLE/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: ONDO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: BOME/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
+
+  - symbol: MASK/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: BICO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: STG/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: JASMY/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
+
+  - symbol: C98/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: IOTA/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: NEO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 3
+    quantity_precision: 2
+
+  - symbol: QNT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 2
+    quantity_precision: 2
+
+  - symbol: LRC/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: RDNT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: IO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 4
+    quantity_precision: 1
+
+  - symbol: AEVO/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 5
+    quantity_precision: 0
+
+  - symbol: NOT/USDT:USDT
+    enabled: true
+    min_notional_usdt: 10
+    tick_precision: 6
+    quantity_precision: 0
