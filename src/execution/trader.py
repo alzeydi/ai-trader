@@ -165,16 +165,18 @@ class Trader:
             log.warning("market_context fetch failed for %s: %s", signal.symbol, exc)
             return {}
 
-        funding_pct = (mc.funding_rate or 0.0) * 100.0
-        liq_total = mc.liquidations_4h_usd or 0.0
+        funding_pct = mc.funding_rate * 100.0 if mc.funding_rate is not None else None
+        liq_total = mc.liquidations_4h_usd
         # Until we split liquidations by side, attribute the full notional
-        # to the trade's own side (worst-case for the squeeze rule).
+        # to the trade's own side (worst-case for the squeeze rule); leave
+        # the opposite side as None so the LLM treats it as "not measured"
+        # rather than "zero".
         return {
             "funding_rate_now": funding_pct,
-            "funding_rate_8h_avg": funding_pct,
+            "funding_rate_8h_avg": None,
             "oi_delta_1h_pct": mc.open_interest_delta_1h,
-            "liq_long": liq_total if signal.side == "long" else 0.0,
-            "liq_short": liq_total if signal.side == "short" else 0.0,
+            "liq_long": liq_total if signal.side == "long" else None,
+            "liq_short": liq_total if signal.side == "short" else None,
             "btc_dominance": mc.btc_dominance,
             "btc_direction": mc.btc_1h_direction,
         }

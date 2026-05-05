@@ -9,8 +9,10 @@ would auto-reject anyway. Anything that passes pre-flight is delegated to
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
+from src.config import settings
 from src.llm.client import ClaudeClient
 from src.llm.types import VetoAccount, VetoContext, VetoResponse
 from src.persistence.db import AIDecision, make_session_factory
@@ -26,6 +28,12 @@ MAX_LOSSES_STREAK = 3
 FUNDING_OVERHEATED_PCT = 0.05
 LIQUIDATION_SQUEEZE_USD = 50_000_000.0
 
+# Local cooldown to avoid paying Anthropic for identical decisions every cycle.
+LLM_VETO_COOLDOWN_SEC = 600
+# Minimum number of non-null context fields required before we even ask the LLM.
+# With fewer than this, an LLM call is wasted money — pre-skip deterministically.
+MIN_CONTEXT_FIELDS = 2
+
 
 # Re-export for callers that still import VetoResponse from this module.
 __all__ = [
@@ -35,6 +43,40 @@ __all__ = [
     "veto_candidate",
     "preflight_check",
 ]
+
+
+# In-process cache: (symbol, side, entry_type) -> (decision, ts, response).
+_DECISION_CACHE: dict[tuple[str, str, str], tuple[float, VetoResponse]] = {}
+
+
+def _cache_key(c: CandidateSignal) -> tuple[str, str, str]:
+    return (c.symbol, c.side, c.entry_type)
+
+
+def _cooldown_hit(c: CandidateSignal) -> VetoResponse | None:
+    entry = _DECISION_CACHE.get(_cache_key(c))
+    if entry is None:
+        return None
+    ts, resp = entry
+    if time.monotonic() - ts > LLM_VETO_COOLDOWN_SEC:
+        return None
+    return resp
+
+
+def _cache_decision(c: CandidateSignal, resp: VetoResponse) -> None:
+    _DECISION_CACHE[_cache_key(c)] = (time.monotonic(), resp)
+
+
+def _count_available_context(ctx: VetoContext) -> int:
+    fields = (
+        ctx.funding_rate_now,
+        ctx.oi_delta_1h_pct,
+        ctx.liq_long,
+        ctx.liq_short,
+        ctx.btc_dominance,
+        ctx.btc_direction,
+    )
+    return sum(1 for v in fields if v is not None)
 
 
 def preflight_check(
@@ -49,14 +91,28 @@ def preflight_check(
         return "daily_pnl"
     if account.losses_streak >= MAX_LOSSES_STREAK:
         return "losses_streak"
-    if candidate.side == "long" and context.funding_rate_now > FUNDING_OVERHEATED_PCT:
-        return "funding_long_overheated"
-    if candidate.side == "short" and context.funding_rate_now < -FUNDING_OVERHEATED_PCT:
-        return "funding_short_oversold"
-    if candidate.side == "long" and context.liq_long > LIQUIDATION_SQUEEZE_USD:
+    if candidate.signal_strength < settings.signal_min_confidence:
+        return "signal_strength_below_floor"
+    funding = context.funding_rate_now
+    if funding is not None:
+        if candidate.side == "long" and funding > FUNDING_OVERHEATED_PCT:
+            return "funding_long_overheated"
+        if candidate.side == "short" and funding < -FUNDING_OVERHEATED_PCT:
+            return "funding_short_oversold"
+    if (
+        candidate.side == "long"
+        and context.liq_long is not None
+        and context.liq_long > LIQUIDATION_SQUEEZE_USD
+    ):
         return "long_liquidation_squeeze"
-    if candidate.side == "short" and context.liq_short > LIQUIDATION_SQUEEZE_USD:
+    if (
+        candidate.side == "short"
+        and context.liq_short is not None
+        and context.liq_short > LIQUIDATION_SQUEEZE_USD
+    ):
         return "short_liquidation_squeeze"
+    if _count_available_context(context) < MIN_CONTEXT_FIELDS:
+        return "insufficient_context"
     return None
 
 
@@ -114,7 +170,7 @@ def veto_candidate(
     *,
     client: ClaudeClient | None = None,
 ) -> VetoResponse:
-    """Apply hard rules first, then defer to the LLM if pre-flight passes."""
+    """Apply hard rules + cooldown first, then defer to the LLM."""
     ctx = _coerce_context(context)
     acct = _coerce_account(account)
 
@@ -130,5 +186,15 @@ def veto_candidate(
         _log_preflight(candidate, rule, response)
         return response
 
+    cached = _cooldown_hit(candidate)
+    if cached is not None:
+        log.info(
+            "veto: cooldown hit for %s — reusing %s (saves LLM call)",
+            candidate.symbol, cached.decision,
+        )
+        return cached
+
     llm = client if client is not None else ClaudeClient()
-    return llm.veto(candidate=candidate, context=ctx, account=acct)
+    response = llm.veto(candidate=candidate, context=ctx, account=acct)
+    _cache_decision(candidate, response)
+    return response
