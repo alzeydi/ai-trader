@@ -37,6 +37,28 @@ class OrderExecutor:
 
     # ------------------------------------------------------------------
     def open_position(self, order: TradeOrder) -> ExecutionResult:
+        # Idempotency: never stack a second position on a symbol that
+        # already has an open trade in the DB. Without this guard, a
+        # cached LLM TAKE verdict (cooldown) re-fires open_position every
+        # cycle, drains margin, and the second call's SL placement may
+        # leave the first position naked.
+        with self.session_factory() as s:
+            existing = s.execute(
+                select(Trade)
+                .where(Trade.symbol == order.symbol)
+                .where(Trade.closed_at.is_(None))
+            ).scalar_one_or_none()
+            if existing is not None:
+                log.info(
+                    "skip open: %s already has open trade id=%d (idempotent)",
+                    order.symbol, existing.id,
+                )
+                return ExecutionResult(
+                    success=False,
+                    paper=self.paper,
+                    trade_id=existing.id,
+                    reason="already_open",
+                )
         if self.paper:
             return self._open_paper(order)
         return self._open_live(order)
@@ -117,29 +139,73 @@ class OrderExecutor:
             order.symbol, "market", entry_side, order.quantity,
             None, {"reduceOnly": False},
         )
+        entry_id = str(entry_resp.get("id") or "")
+
+        # Critical: protect the freshly-opened position with a stop-loss
+        # before doing anything else. If the SL placement fails (e.g.
+        # -2021 "Order would immediately trigger" because the market
+        # moved past our stop between signal and order) we MUST roll the
+        # entry back. A naked perp position is not acceptable.
         sl_params: dict[str, Any] = {"stopPrice": order.stop_loss, "reduceOnly": True}
+        try:
+            sl_resp = ex.create_order(
+                order.symbol, "STOP_MARKET", exit_side, order.quantity, None, sl_params
+            )
+        except Exception as sl_exc:  # noqa: BLE001
+            log.error(
+                "CRITICAL: SL placement failed for %s after entry %s — "
+                "rolling back position: %s",
+                order.symbol, entry_id, sl_exc,
+            )
+            try:
+                ex.create_order(
+                    order.symbol, "market", exit_side, order.quantity,
+                    None, {"reduceOnly": True},
+                )
+                log.info("rollback OK: %s position closed", order.symbol)
+            except Exception as rb_exc:  # noqa: BLE001
+                log.error(
+                    "ROLLBACK FAILED for %s — manual intervention required: %s",
+                    order.symbol, rb_exc,
+                )
+            return ExecutionResult(
+                success=False,
+                paper=False,
+                entry_order_id=entry_id,
+                reason=f"sl_failed_rolled_back: {sl_exc}",
+            )
+        sl_id = str(sl_resp.get("id") or "")
+
+        # TP failure is non-fatal: SL still protects downside, monitor's
+        # max-hold and invalidation paths will still close the trade.
+        tp_id = ""
         tp_params: dict[str, Any] = {"stopPrice": order.take_profit, "reduceOnly": True}
-        sl_resp = ex.create_order(
-            order.symbol, "STOP_MARKET", exit_side, order.quantity, None, sl_params
-        )
-        tp_resp = ex.create_order(
-            order.symbol, "TAKE_PROFIT_MARKET", exit_side, order.quantity, None, tp_params
-        )
+        try:
+            tp_resp = ex.create_order(
+                order.symbol, "TAKE_PROFIT_MARKET", exit_side, order.quantity,
+                None, tp_params,
+            )
+            tp_id = str(tp_resp.get("id") or "")
+        except Exception as tp_exc:  # noqa: BLE001
+            log.warning(
+                "TP placement failed for %s (SL still active): %s",
+                order.symbol, tp_exc,
+            )
 
         trade_id = self._record_open(
             order,
             paper=False,
-            entry_order_id=str(entry_resp.get("id") or ""),
-            stop_order_id=str(sl_resp.get("id") or ""),
-            take_order_id=str(tp_resp.get("id") or ""),
+            entry_order_id=entry_id,
+            stop_order_id=sl_id,
+            take_order_id=tp_id,
         )
         return ExecutionResult(
             success=True,
             paper=False,
             trade_id=trade_id,
-            entry_order_id=str(entry_resp.get("id") or ""),
-            stop_order_id=str(sl_resp.get("id") or ""),
-            take_order_id=str(tp_resp.get("id") or ""),
+            entry_order_id=entry_id,
+            stop_order_id=sl_id,
+            take_order_id=tp_id,
             fill_price=float(entry_resp.get("average") or order.entry_price),
             reason="live-fill",
         )
