@@ -318,6 +318,35 @@ class OrderExecutor:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("cancel_order %s failed: %s", oid, exc)
 
+        # Sweep any leftover reduce-only orders. Catches:
+        #   * the previous SL when `replace_stop` placed a new one but failed
+        #     to cancel the old one,
+        #   * unrelated brackets placed manually before adoption,
+        #   * any order whose ID was lost because the row was wiped.
+        # Without this sweep these orders linger forever (and re-trigger if
+        # a future position re-opens on the same symbol).
+        try:
+            leftovers = ex.fetch_open_orders(symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("close sweep: fetch_open_orders %s failed: %s", symbol, exc)
+            leftovers = []
+        for o in leftovers:
+            info = o.get("info") or {}
+            if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
+                continue
+            oid = str(o.get("id") or "")
+            if not oid:
+                continue
+            try:
+                ex.cancel_order(oid, symbol)
+                log.info("close sweep: cancelled leftover order %s on %s", oid, symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("close sweep: cancel %s failed: %s", oid, exc)
+
+        if reason == "sl_or_tp_hit":
+            # SL/TP path is finished — nothing else to do; PnL is recorded below.
+            pass
+        else:
             exit_side = "sell" if side == "long" else "buy"
             try:
                 close_resp = ex.create_order(
@@ -402,7 +431,15 @@ class OrderExecutor:
                 try:
                     ex.cancel_order(old_oid, symbol)
                 except Exception as exc:  # noqa: BLE001
-                    log.debug("replace_stop: cancel old SL %s skipped: %s", old_oid, exc)
+                    # Promoted to warning: silent failure here leaves an
+                    # orphan SL on the exchange forever (the new SL
+                    # overwrites stop_order_id in the DB so no later code
+                    # path can find the old one).
+                    log.warning(
+                        "replace_stop: cancel old SL %s failed for %s — "
+                        "orphan order will remain until close-time sweep: %s",
+                        old_oid, symbol, exc,
+                    )
             new_stop = new_stop_priced
 
         with self.session_factory() as s:
