@@ -430,13 +430,46 @@ def main() -> None:
 
     while True:
         realized = daily_realized_pnl(session_factory)
-        unrealized = _live_unrealized_pnl(binance) if not settings.paper_trading else 0.0
-        equity = float(settings.equity_usd) + realized + unrealized
+        # Pull equity straight from the exchange wallet — that's the only
+        # source of truth that includes taker fees, funding payments, and
+        # historical PnL beyond today's `realized` row in our DB. Falls back
+        # to the static config + computed components only if fetch_balance
+        # itself errors. Without this the dashboard drifts from Binance by
+        # the cumulative-fee magnitude (~0.08 % notional per round-trip).
+        equity: float | None = None
+        balance: float | None = None
+        unrealized: float = 0.0
+        if not settings.paper_trading:
+            try:
+                bal = binance.exchange.fetch_balance()
+                # Read raw Binance fields so the dashboard matches the UI
+                # exactly. ccxt's normalized USDT.total mapping varies
+                # between versions for futures wallets; the info dict is
+                # stable.
+                info = bal.get("info", {}) if isinstance(bal, dict) else {}
+                margin_bal = info.get("totalMarginBalance")
+                wallet_bal = info.get("totalWalletBalance")
+                upnl = info.get("totalUnrealizedProfit")
+                if margin_bal is not None:
+                    equity = float(margin_bal)        # = Margin Balance in UI
+                if wallet_bal is not None:
+                    balance = float(wallet_bal)       # = Balance in UI
+                if upnl is not None:
+                    unrealized = float(upnl)
+                else:
+                    unrealized = _live_unrealized_pnl(binance)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("equity loop: fetch_balance failed: %s", exc)
+                unrealized = _live_unrealized_pnl(binance)
+        if equity is None:
+            equity = float(settings.equity_usd) + realized + unrealized
+        if balance is None:
+            balance = float(settings.equity_usd) + realized
         append_equity(equity_usd=equity, realized=realized, unrealized=unrealized)
         append_equity_snapshot(
             session_factory,
             equity_usd=equity,
-            balance_usd=float(settings.equity_usd) + realized,
+            balance_usd=balance,
             realized_pnl=realized,
             unrealized_pnl=unrealized,
         )
