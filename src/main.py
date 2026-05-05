@@ -113,6 +113,149 @@ def _reconcile_open_trades(session_factory, binance, log) -> None:
             )
 
 
+def _adopt_orphan_exchange_positions(session_factory, binance, log) -> int:
+    """Insert DB rows for live exchange positions we don't know about.
+
+    Symmetric counterpart to `_reconcile_open_trades`: handles the case where
+    the exchange holds a position but we have no matching open Trade row.
+    Without this, the monitor cannot trail/close such positions and they
+    silently linger on the wallet. Triggers most often after a manual SQL
+    wipe (RESET_DB_ON_START) but also after disk loss / DB rollback.
+
+    For each orphan position we:
+      * look at open reduce-only orders to recover SL/TP IDs and prices that
+        were placed by a previous container instance;
+      * if no SL exists, place a fresh STOP_MARKET reduce-only at
+        max(min_stop_pct, 0.8 %) of entry — the position must not stay naked;
+      * insert a Trade row so the monitor adopts it on the next tick.
+
+    Returns the number of positions adopted.
+    """
+    if settings.paper_trading:
+        return 0
+    try:
+        snaps = fetch_open_positions(binance)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("adopt: fetch_open_positions failed, skipping: %s", exc)
+        return 0
+    if not snaps:
+        return 0
+
+    with session_factory() as s:
+        known = {
+            row.symbol for row in
+            s.query(Trade.symbol).filter(Trade.closed_at.is_(None)).all()
+        }
+
+    ex = binance.exchange
+    adopted = 0
+    for snap in snaps:
+        if snap.quantity <= 0 or snap.symbol in known:
+            continue
+
+        side = "long" if snap.side.lower().startswith("l") else "short"
+        entry = float(snap.entry_price) or float(snap.mark_price)
+        if entry <= 0:
+            log.warning("adopt: %s skipped, no entry/mark price", snap.symbol)
+            continue
+
+        sl_oid = ""
+        tp_oid = ""
+        sl_price: float | None = None
+        tp_price: float | None = None
+        try:
+            open_orders = ex.fetch_open_orders(snap.symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("adopt: fetch_open_orders %s failed: %s", snap.symbol, exc)
+            open_orders = []
+        for o in open_orders:
+            info = o.get("info") or {}
+            if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
+                continue
+            otype = (o.get("type") or info.get("type") or "").upper()
+            stop_price = o.get("stopPrice") or info.get("stopPrice")
+            try:
+                stop_price_f = float(stop_price) if stop_price is not None else None
+            except (TypeError, ValueError):
+                stop_price_f = None
+            if "STOP" in otype and "PROFIT" not in otype and not sl_oid:
+                sl_oid = str(o.get("id") or "")
+                sl_price = stop_price_f
+            elif "TAKE_PROFIT" in otype and not tp_oid:
+                tp_oid = str(o.get("id") or "")
+                tp_price = stop_price_f
+
+        # Position must not stay naked. Place a defensive SL if none exists.
+        if sl_price is None:
+            sl_dist = entry * float(settings.min_stop_pct)
+            sl_price = entry - sl_dist if side == "long" else entry + sl_dist
+            exit_side = "sell" if side == "long" else "buy"
+            try:
+                price_str = ex.price_to_precision(snap.symbol, sl_price)
+                sl_price_priced = float(price_str)
+                resp = ex.create_order(
+                    snap.symbol, "STOP_MARKET", exit_side, snap.quantity, None,
+                    {"stopPrice": sl_price_priced, "reduceOnly": True},
+                )
+                sl_oid = str(resp.get("id") or "")
+                sl_price = sl_price_priced
+                log.info(
+                    "adopt: placed defensive SL on %s @ %.6f (orphan was naked)",
+                    snap.symbol, sl_price,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.error(
+                    "adopt: SL placement FAILED for %s — position remains naked: %s",
+                    snap.symbol, exc,
+                )
+
+        # TP is best-effort; SL is the hard requirement.
+        if tp_price is None:
+            sl_dist_actual = abs(entry - sl_price) if sl_price else entry * 0.008
+            tp_dist = sl_dist_actual * (
+                float(settings.atr_take_multiplier) / float(settings.atr_stop_multiplier)
+            )
+            tp_price = entry + tp_dist if side == "long" else entry - tp_dist
+
+        risk_usd = abs(entry - sl_price) * snap.quantity if sl_price else 0.0
+
+        with session_factory() as s:
+            s.add(Trade(
+                symbol=snap.symbol,
+                side=side,
+                type="adopted",
+                entry=entry,
+                stop=float(sl_price) if sl_price else entry,
+                original_stop=float(sl_price) if sl_price else entry,
+                take_profit=float(tp_price),
+                quantity=snap.quantity,
+                leverage=int(settings.leverage),
+                risk_usd=float(risk_usd),
+                pnl_usd=0.0,
+                paper=False,
+                entry_order_id=None,
+                stop_order_id=sl_oid or None,
+                take_order_id=tp_oid or None,
+                invalidation_signal=None,
+                llm_confidence=0.0,
+            ))
+            s.commit()
+        adopted += 1
+        log.info(
+            "adopt: %s %s qty=%.6f entry=%.6f sl=%.6f tp=%.6f (sl_oid=%s tp_oid=%s)",
+            snap.symbol, side, snap.quantity, entry,
+            sl_price or 0.0, tp_price or 0.0, sl_oid or "-", tp_oid or "-",
+        )
+
+    if adopted:
+        log.warning(
+            "startup: adopted %d orphan exchange position(s) into DB; "
+            "monitor will now manage them",
+            adopted,
+        )
+    return adopted
+
+
 def _live_unrealized_pnl(binance) -> float:
     """Sum unrealized PnL across all open positions reported by the exchange.
 
@@ -228,6 +371,10 @@ def main() -> None:
     binance = BinanceClient()
     if not wiped:
         _reconcile_open_trades(session_factory, binance, log)
+    # Adoption must run even after a wipe — that's exactly when the DB is
+    # empty but the exchange still holds open positions from the previous
+    # container instance.
+    _adopt_orphan_exchange_positions(session_factory, binance, log)
     engine = SignalEngine(client=binance)
     llm_client = ClaudeClient()
     notifier = TelegramNotifier()
