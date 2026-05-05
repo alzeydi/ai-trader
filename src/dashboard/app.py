@@ -283,7 +283,7 @@ def page_trades() -> None:
         ] if c in df.columns
     ]
     st.dataframe(df[cols].sort_values("opened_at", ascending=False),
-                 use_container_width=True, hide_index=True)
+                 width="stretch", hide_index=True)
 
 
 def page_ai_decisions() -> None:
@@ -327,7 +327,7 @@ def page_ai_decisions() -> None:
             "took", "cost_usd", "duration_ms", "model",
         ] if c in view.columns
     ]
-    st.dataframe(view[summary_cols], use_container_width=True, hide_index=True)
+    st.dataframe(view[summary_cols], width="stretch", hide_index=True)
 
     st.subheader("Inspect raw")
     if not view.empty:
@@ -371,7 +371,7 @@ def page_positions() -> None:
             "unrealized_pnl", "opened_at", "updated_at",
         ] if c in df.columns
     ]
-    st.dataframe(df[cols], use_container_width=True, hide_index=True)
+    st.dataframe(df[cols], width="stretch", hide_index=True)
 
 
 def page_settings() -> None:
@@ -392,7 +392,7 @@ def page_settings() -> None:
             rows.append((key, value.strip()))
         st.dataframe(
             pd.DataFrame(rows, columns=["key", "value"]),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
     else:
         st.warning(f"No .env file found at `{env_path}`.")
