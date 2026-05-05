@@ -135,14 +135,22 @@ class PositionMonitor:
 
     # ------------------------------------------------------------------
     def _update_trail(self, trade: Trade) -> None:
-        """Arm and tighten a trailing stop based on R-multiples of profit."""
+        """USD-denominated breakeven trailing.
+
+        Phase 1 (activation): when unrealized net profit (after round-trip
+        taker fees) reaches `breakeven_activate_usd`, push the stop to a
+        price that locks in at least `breakeven_lock_usd` of net profit.
+        Phase 2 (trail): on each tick, lock in
+        `max(breakeven_lock_usd, HWM_net_profit − trail_distance_usd)`.
+        Stops only tighten; never loosen.
+        """
         if self.client is None or self.executor is None:
             return
-        original = trade.original_stop or trade.stop
-        if original is None or trade.entry is None:
+        if trade.entry is None or trade.quantity is None or trade.side is None:
             return
-        r = abs(float(trade.entry) - float(original))
-        if r <= 0:
+        qty = float(trade.quantity)
+        entry = float(trade.entry)
+        if qty <= 0 or entry <= 0:
             return
 
         try:
@@ -155,34 +163,51 @@ class PositionMonitor:
             return
         mark = float(last)
 
-        side = (trade.side or "").lower()
-        activate_at_profit = settings.trail_activate_r * r
-        trail_distance = settings.trail_distance_r * r
+        side = trade.side.lower()
+        # Round-trip fees: taker on entry + taker on exit at current mark.
+        fee_pct = float(settings.taker_fee_pct)
+        fees = qty * entry * fee_pct + qty * mark * fee_pct
 
         if side == "long":
-            profit = mark - float(trade.entry)
+            gross = qty * (mark - entry)
         else:
-            profit = float(trade.entry) - mark
-        if profit < activate_at_profit:
+            gross = qty * (entry - mark)
+        net_profit = gross - fees
+
+        if net_profit < float(settings.breakeven_activate_usd):
             return
 
-        # Update high-water mark.
-        hwm = trade.trail_high_water
-        if side == "long":
-            new_hwm = max(float(hwm or mark), mark)
-            new_stop = new_hwm - trail_distance
-            tighter = new_stop > float(trade.stop)
-        else:
-            new_hwm = min(float(hwm or mark), mark)
-            new_stop = new_hwm + trail_distance
-            tighter = new_stop < float(trade.stop)
+        prev_hwm = float(trade.trail_high_water) if trade.trail_high_water is not None else 0.0
+        hwm_profit = max(prev_hwm, net_profit)
 
-        # Persist new HWM/armed even if stop isn't moving yet.
-        if hwm is None or new_hwm != float(hwm) or not trade.trail_armed:
+        target_locked = max(
+            float(settings.breakeven_lock_usd),
+            hwm_profit - float(settings.trail_distance_usd),
+        )
+
+        # Convert locked NET profit -> SL price.
+        # net = qty*(stop−entry) − qty*entry*fee − qty*stop*fee  (long)
+        #     = qty*stop*(1−fee) − qty*entry*(1+fee)
+        # → stop = (net/qty + entry*(1+fee)) / (1−fee)
+        # Symmetric for short.
+        if side == "long":
+            target_stop = (target_locked / qty + entry * (1.0 + fee_pct)) / (1.0 - fee_pct)
+            tighter = target_stop > float(trade.stop)
+        else:
+            target_stop = (entry * (1.0 - fee_pct) - target_locked / qty) / (1.0 + fee_pct)
+            tighter = target_stop < float(trade.stop)
+
+        # Persist HWM/armed even if the stop is not moving yet, so a
+        # restart preserves arming state.
+        if (
+            trade.trail_high_water is None
+            or hwm_profit != prev_hwm
+            or not trade.trail_armed
+        ):
             with self.session_factory() as s:
                 row = s.get(Trade, trade.id)
                 if row is not None:
-                    row.trail_high_water = float(new_hwm)
+                    row.trail_high_water = float(hwm_profit)
                     row.trail_armed = True
                     s.commit()
 
@@ -190,14 +215,16 @@ class PositionMonitor:
             return
 
         old_stop = float(trade.stop)
-        if not self.executor.replace_stop(trade.id, new_stop):
+        if not self.executor.replace_stop(trade.id, target_stop):
             return
         if self.notifier is not None:
             try:
                 self.notifier.send(
-                    f"🔒 *TRAIL* `{trade.symbol}` {side.upper()} "
-                    f"SL `{old_stop:.6f}` → `{new_stop:.6f}` "
-                    f"(HWM `{new_hwm:.6f}`)"
+                    f"🔒 *TRAIL* `{trade.symbol}` {side.upper()}\n"
+                    f"SL `{old_stop:.6f}` → `{target_stop:.6f}`\n"
+                    f"Locked: `${target_locked:.2f}` net | "
+                    f"HWM: `${hwm_profit:.2f}` | "
+                    f"Now: `${net_profit:.2f}`"
                 )
             except Exception as exc:  # noqa: BLE001
                 log.debug("trail notify failed: %s", exc)
