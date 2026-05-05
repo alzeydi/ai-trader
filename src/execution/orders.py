@@ -427,18 +427,50 @@ class OrderExecutor:
                 log.warning("replace_stop: new SL placement failed for %s: %s", symbol, exc)
                 return False
             new_oid = str(resp.get("id") or "")
-            if old_oid:
+            # Sweep ALL other reduce-only STOP_MARKET orders for this symbol
+            # instead of cancelling only `old_oid`. On demo-fapi (and
+            # occasionally on prod) targeted cancel_order silently fails or
+            # returns "Unknown order"; once the DB pointer is overwritten
+            # those orphans become unreachable and stack on the exchange,
+            # so each trail tick previously left a fresh ghost SL behind.
+            try:
+                open_orders = ex.fetch_open_orders(symbol)
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "replace_stop: fetch_open_orders %s failed, falling back to "
+                    "targeted cancel of %s: %s", symbol, old_oid, exc,
+                )
+                open_orders = []
+                if old_oid:
+                    try:
+                        ex.cancel_order(old_oid, symbol)
+                    except Exception as inner:  # noqa: BLE001
+                        log.warning(
+                            "replace_stop: targeted cancel of %s on %s also "
+                            "failed: %s", old_oid, symbol, inner,
+                        )
+            for o in open_orders:
+                info = o.get("info") or {}
+                oid = str(o.get("id") or "")
+                if not oid or oid == new_oid:
+                    continue
+                if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
+                    continue
+                otype = (o.get("type") or info.get("type") or "").upper()
+                # Only sweep STOP-class orders. Leave TAKE_PROFIT_MARKET alone:
+                # it's the same trade's TP and cancelling it would leave the
+                # position with no upside target until close.
+                if "STOP" not in otype or "TAKE_PROFIT" in otype:
+                    continue
                 try:
-                    ex.cancel_order(old_oid, symbol)
+                    ex.cancel_order(oid, symbol)
+                    log.info(
+                        "replace_stop: swept stale SL %s on %s", oid, symbol,
+                    )
                 except Exception as exc:  # noqa: BLE001
-                    # Promoted to warning: silent failure here leaves an
-                    # orphan SL on the exchange forever (the new SL
-                    # overwrites stop_order_id in the DB so no later code
-                    # path can find the old one).
                     log.warning(
-                        "replace_stop: cancel old SL %s failed for %s — "
-                        "orphan order will remain until close-time sweep: %s",
-                        old_oid, symbol, exc,
+                        "replace_stop: sweep cancel %s on %s failed: %s",
+                        oid, symbol, exc,
                     )
             new_stop = new_stop_priced
 
