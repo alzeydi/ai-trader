@@ -67,6 +67,17 @@ def _cache_decision(c: CandidateSignal, resp: VetoResponse) -> None:
     _DECISION_CACHE[_cache_key(c)] = (time.monotonic(), resp)
 
 
+def invalidate_cooldown(symbol: str) -> None:
+    """Drop every cached veto verdict for `symbol`.
+
+    Called after a failed entry (e.g. SL placement -2021 → rollback) so the
+    next cycle reissues a fresh LLM call instead of looping on the stale
+    TAKE that just produced a self-rolling-back trade.
+    """
+    for key in [k for k in _DECISION_CACHE if k[0] == symbol]:
+        _DECISION_CACHE.pop(key, None)
+
+
 def _count_available_context(ctx: VetoContext) -> int:
     fields = (
         ctx.funding_rate_now,

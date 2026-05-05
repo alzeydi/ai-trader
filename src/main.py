@@ -338,12 +338,26 @@ def _filter_known_symbols(binance, symbols, log) -> list[str]:
     except Exception as exc:  # noqa: BLE001
         log.warning("could not preload markets for validation: %s", exc)
         return symbols
-    known = set(binance.exchange.markets.keys())
-    kept, dropped = [], []
+    markets = binance.exchange.markets
+    kept, dropped_unlisted, dropped_inactive = [], [], []
     for s in symbols:
-        (kept if s in known else dropped).append(s)
-    if dropped:
-        log.warning("dropping %d unlisted symbol(s): %s", len(dropped), dropped)
+        m = markets.get(s)
+        if m is None:
+            dropped_unlisted.append(s)
+            continue
+        # Some symbols are listed but in pre-trading / maintenance / delisted
+        # state. Calling fetch_ohlcv on them returns -1122 "Invalid symbol
+        # status" and pollutes every cycle with tracebacks.
+        if m.get("active") is False:
+            dropped_inactive.append(s)
+            continue
+        kept.append(s)
+    if dropped_unlisted:
+        log.warning("dropping %d unlisted symbol(s): %s",
+                    len(dropped_unlisted), dropped_unlisted)
+    if dropped_inactive:
+        log.warning("dropping %d inactive symbol(s): %s",
+                    len(dropped_inactive), dropped_inactive)
     return kept
 
 

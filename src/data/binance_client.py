@@ -126,7 +126,20 @@ class BinanceClient:
                 if age < _timeframe_seconds(timeframe):
                     return cached
 
-        raw = self._fetch_ohlcv_remote(symbol, timeframe, limit)
+        try:
+            raw = self._fetch_ohlcv_remote(symbol, timeframe, limit)
+        except ccxt.BadRequest as exc:
+            # -1122 "Invalid symbol status" — symbol is listed but in
+            # maintenance / pre-trading / delisted state. Soft-skip with a
+            # warning instead of raising so a single broken pair doesn't
+            # surface as a stack trace every cycle. Engine will short-circuit
+            # on the resulting empty frame via its _MIN_* length guard.
+            msg = str(exc)
+            if "-1122" in msg or "Invalid symbol status" in msg:
+                log.warning("fetch_ohlcv: %s %s soft-skipped (%s)",
+                            symbol, timeframe, msg)
+                return pd.DataFrame()
+            raise
         df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
         if df.empty:
             return df

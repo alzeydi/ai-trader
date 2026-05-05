@@ -19,6 +19,7 @@ import ccxt
 
 from src.config import settings
 from src.execution.types import ExecutionResult, TradeOrder
+from src.llm.veto import invalidate_cooldown
 from src.persistence.db import SessionFactory, Trade, make_session_factory
 
 if TYPE_CHECKING:
@@ -215,6 +216,10 @@ class OrderExecutor:
                     "ROLLBACK FAILED for %s — manual intervention required: %s",
                     order.symbol, rb_exc,
                 )
+            # Drop the cached LLM verdict so the next cycle issues a fresh
+            # call instead of looping on the same stale TAKE that just
+            # produced a self-rolling-back trade.
+            invalidate_cooldown(order.symbol)
             return ExecutionResult(
                 success=False,
                 paper=False,
