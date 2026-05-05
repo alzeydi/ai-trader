@@ -68,7 +68,16 @@ class BinanceClient:
             "apiKey": settings.binance_api_key.get_secret_value() or None,
             "secret": settings.binance_api_secret.get_secret_value() or None,
             "enableRateLimit": True,
-            "options": {"defaultType": "future"},
+            "options": {
+                "defaultType": "future",
+                # ccxt's load_markets() otherwise calls SAPI
+                # (api.binance.com/sapi/v1/capital/config/getall) to enrich
+                # currency metadata. Demo Trading exposes only fapi, and our
+                # futures-only keys can't sign SAPI requests, which surfaces
+                # as a misleading "Invalid Api-Key ID". We don't need
+                # currency metadata for futures trading anyway.
+                "fetchCurrencies": False,
+            },
         }
         self._exchange = ccxt.binanceusdm(params)
         if self.testnet:
