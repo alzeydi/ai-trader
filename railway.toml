@@ -45,31 +45,40 @@ TELEGRAM_CHAT_ID = ""
 TELEGRAM_ENABLED = "false"
 
 # ----- Trading core -----
-TRADING_MODE = "paper"
-PAPER_TRADING = "true"
-DRY_RUN = "true"
+TRADING_MODE = "live"
+PAPER_TRADING = "false"
+DRY_RUN = "false"
 BASE_CURRENCY = "USDT"
-EQUITY_USD = "1000.0"
+EQUITY_USD = "5000.0"
 LEVERAGE = "3"
 MARGIN_MODE = "ISOLATED"
 
 # ----- Risk -----
+# Statistics-collection mode: limits effectively disabled so the bot can
+# accumulate a long history of trades without auto-pausing.
 RISK_PER_TRADE_PCT = "0.5"
-MAX_OPEN_POSITIONS = "3"
-MAX_DAILY_LOSS_PCT = "3.0"
-MAX_DRAWDOWN_PCT = "15.0"
+MAX_OPEN_POSITIONS = "10000"
+MAX_DAILY_LOSS_PCT = "100.0"
+MAX_DRAWDOWN_PCT = "100.0"
 ATR_STOP_MULTIPLIER = "1.5"
 ATR_TAKE_MULTIPLIER = "3.0"
 
 # ----- Safety mode -----
-SAFETY_MAX_CONSECUTIVE_LOSSES = "3"
-SAFETY_PAUSE_HOURS = "12"
+SAFETY_MAX_CONSECUTIVE_LOSSES = "10000"
+SAFETY_PAUSE_HOURS = "0"
 
 # ----- Signal engine -----
 TIMEFRAME_TREND = "4h"
 TIMEFRAME_STRUCTURE = "1h"
 TIMEFRAME_EXECUTION = "15m"
 SIGNAL_MIN_CONFIDENCE = "0.6"
+MIN_CONFIDENCE = "0.5"
+
+# ----- Trailing stop (USD-denominated breakeven) -----
+TRAIL_ENABLED = "true"
+BREAKEVEN_ACTIVATE_USD = "5.0"
+BREAKEVEN_LOCK_USD = "2.5"
+TRAIL_DISTANCE_USD = "2.5"
 
 # ----- Persistence -----
 DB_PATH = "data/trades.db"
