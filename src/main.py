@@ -26,7 +26,7 @@ from src.execution.trader import Trader
 from src.llm.client import ClaudeClient
 from src.notify.telegram import TelegramNotifier
 from src.persistence.csv_writer import append_equity
-from src.persistence.db import make_session_factory
+from src.persistence.db import Trade, make_session_factory
 from src.risk.safety_mode import SafetyMode
 from src.signal.engine import SignalEngine
 
@@ -51,6 +51,32 @@ def _notify_startup(notifier: TelegramNotifier) -> None:
     )
 
 
+def _close_stale_paper_trades(session_factory) -> int:
+    """When switching from paper to live, paper trades persisted in SQLite
+    keep counting toward the open-positions cap and block real entries.
+    Mark them closed at startup so the live run starts from a clean slate.
+    """
+    if settings.paper_trading:
+        return 0
+    log = logging.getLogger("main")
+    now = datetime.now(tz=timezone.utc)
+    with session_factory() as s:
+        stale = s.query(Trade).filter(
+            Trade.closed_at.is_(None), Trade.paper.is_(True)
+        ).all()
+        for t in stale:
+            t.closed_at = now
+            t.close_price = t.entry
+            t.close_reason = "mode_switch_paper_to_live"
+        if stale:
+            s.commit()
+            log.info(
+                "startup: closed %d stale paper trade(s) on switch to live",
+                len(stale),
+            )
+    return len(stale)
+
+
 def _load_symbols() -> list[str]:
     path = Path(settings.symbols_yaml)
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -70,6 +96,7 @@ def main() -> None:
     )
 
     session_factory = make_session_factory()
+    _close_stale_paper_trades(session_factory)
     binance = BinanceClient()
     engine = SignalEngine(client=binance)
     llm_client = ClaudeClient()
