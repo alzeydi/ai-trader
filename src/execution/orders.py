@@ -163,28 +163,70 @@ class OrderExecutor:
             row_id = row.id
             qty = float(row.quantity)
             side = row.side
+            stop_oid = row.stop_order_id
+            take_oid = row.take_order_id
 
-        # Cancel resting brackets, then market-exit.
-        for oid in (row.stop_order_id, row.take_order_id):
-            if not oid:
-                continue
+        fill: float = 0.0
+
+        if reason == "sl_or_tp_hit":
+            # Exchange already closed the position via SL or TP. Recover the
+            # fill price from whichever bracket order is in a filled state;
+            # cancel the sibling so it doesn't linger.
+            for oid in (stop_oid, take_oid):
+                if not oid:
+                    continue
+                try:
+                    o = ex.fetch_order(oid, symbol)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("fetch_order %s failed: %s", oid, exc)
+                    continue
+                status = (o.get("status") or "").lower()
+                avg = o.get("average") or o.get("price")
+                if status in ("closed", "filled") and avg:
+                    try:
+                        fill = float(avg)
+                    except (TypeError, ValueError):
+                        fill = 0.0
+                    break
+            for oid in (stop_oid, take_oid):
+                if not oid:
+                    continue
+                try:
+                    ex.cancel_order(oid, symbol)
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("cancel_order %s skipped: %s", oid, exc)
+        else:
+            # Manual / max-hold / invalidation: cancel brackets, market-exit.
+            for oid in (stop_oid, take_oid):
+                if not oid:
+                    continue
+                try:
+                    ex.cancel_order(oid, symbol)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("cancel_order %s failed: %s", oid, exc)
+
+            exit_side = "sell" if side == "long" else "buy"
             try:
-                ex.cancel_order(oid, symbol)
+                close_resp = ex.create_order(
+                    symbol, "market", exit_side, qty, None, {"reduceOnly": True}
+                )
             except Exception as exc:  # noqa: BLE001
-                log.warning("cancel_order %s failed: %s", oid, exc)
+                log.error("close_position market exit failed for %s: %s", symbol, exc)
+                return ExecutionResult(
+                    success=False, paper=False, trade_id=row_id, reason=str(exc)
+                )
+            fill = float(close_resp.get("average") or close_resp.get("price") or 0.0)
 
-        exit_side = "sell" if side == "long" else "buy"
-        try:
-            close_resp = ex.create_order(
-                symbol, "market", exit_side, qty, None, {"reduceOnly": True}
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.error("close_position market exit failed for %s: %s", symbol, exc)
-            return ExecutionResult(success=False, paper=False, trade_id=row_id, reason=str(exc))
-
-        fill = float(close_resp.get("average") or close_resp.get("price") or 0.0)
         if fill <= 0:
             fill = self._mark_price(symbol) or 0.0
+        if fill <= 0:
+            # Last-resort fallback so we still record a closure.
+            with self.session_factory() as s:
+                fallback_row = s.execute(
+                    select(Trade).where(Trade.id == row_id)
+                ).scalar_one()
+                fill = float(fallback_row.entry)
+
         pnl = self._compute_pnl(side=side, qty=qty, entry=row.entry, exit_=fill)
 
         with self.session_factory() as s:
@@ -195,6 +237,10 @@ class OrderExecutor:
             row.pnl_usd = pnl
             s.commit()
 
+        log.info(
+            "LIVE CLOSE %s reason=%s exit=%.4f pnl=%.2f trade_id=%s",
+            symbol, reason, fill, pnl, row_id,
+        )
         return ExecutionResult(
             success=True,
             paper=False,
