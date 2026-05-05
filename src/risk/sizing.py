@@ -96,6 +96,19 @@ def size_position(
     if quantity <= 0:
         return None
 
+    # Per-trade margin policy cap: don't let a single trade consume more
+    # than `max_margin_per_trade_pct` of equity in initial margin. This is
+    # what equalises position sizes across symbols — without it, low-price
+    # coins blow out to absurd notionals because qty = risk / sl_distance
+    # explodes when sl_distance is small in absolute terms.
+    if settings.leverage > 0 and settings.max_margin_per_trade_pct > 0:
+        max_margin = account.equity * settings.max_margin_per_trade_pct
+        max_qty_by_policy = (max_margin * settings.leverage) / entry
+        if max_qty_by_policy <= 0:
+            return None
+        if quantity > max_qty_by_policy:
+            quantity = max_qty_by_policy
+
     # Cap quantity by free margin so we never request a notional the wallet
     # cannot back. Required margin per contract = entry / leverage; reserve
     # ~10 % headroom for taker fees, slippage and price drift between sizing

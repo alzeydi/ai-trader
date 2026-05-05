@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     risk_per_trade_type_a: float = 0.02  # ratio, e.g. 0.02 == 2 % of equity
     risk_per_trade_type_b: float = 0.01
     risk_per_trade_type_c: float = 0.01
+    # Per-trade margin policy cap. Without this the risk-USD-based sizing
+    # produces wildly different notionals across symbols (e.g. ZIL at $0.004
+    # gets a $9.6k notional vs DOGE at $0.11 with $90), because qty =
+    # risk / sl_distance explodes when sl_distance is tiny in absolute
+    # terms. Capping by margin makes positions comparable in size
+    # regardless of price.
+    max_margin_per_trade_pct: float = 0.10  # 10 % of equity per single trade
     max_open_positions: int = 2
     max_daily_loss_pct: float = 3.0
     max_drawdown_pct: float = 15.0
