@@ -242,13 +242,14 @@ class PositionMonitor:
 
     # ------------------------------------------------------------------
     def _update_trail(self, trade: Trade) -> None:
-        """USD-denominated breakeven trailing.
+        """Notional-percent breakeven trailing.
 
-        Phase 1 (activation): when unrealized net profit (after round-trip
-        taker fees) reaches `breakeven_activate_usd`, push the stop to a
-        price that locks in at least `breakeven_lock_usd` of net profit.
+        Phase 1 (activation): when unrealised net profit (after round-trip
+        taker fees) reaches `breakeven_activate_pct` of entry notional
+        (qty × entry), push the stop to a price that locks in at least
+        `breakeven_lock_pct` of notional in net profit.
         Phase 2 (trail): on each tick, lock in
-        `max(breakeven_lock_usd, HWM_net_profit − trail_distance_usd)`.
+        `max(breakeven_lock_pct, HWM_net_profit − trail_distance_pct)`.
         Stops only tighten; never loosen.
         """
         if self.client is None or self.executor is None:
@@ -281,17 +282,23 @@ class PositionMonitor:
             gross = qty * (entry - mark)
         net_profit = gross - fees
 
-        if net_profit < float(settings.breakeven_activate_usd):
+        # Convert pct knobs to USD using entry notional as the base. Doing
+        # the conversion here (instead of carrying pct everywhere) keeps
+        # the rest of the math identical to the previous USD-denominated
+        # version — only the thresholds are now self-scaling.
+        notional = qty * entry
+        activate_usd = notional * float(settings.breakeven_activate_pct)
+        lock_usd = notional * float(settings.breakeven_lock_pct)
+        distance_usd = notional * float(settings.trail_distance_pct)
+
+        if net_profit < activate_usd:
             return
 
         prev_hwm = float(trade.trail_high_water) if trade.trail_high_water is not None else 0.0
         hwm_profit = max(prev_hwm, net_profit)
         was_armed = bool(trade.trail_armed)
 
-        target_locked = max(
-            float(settings.breakeven_lock_usd),
-            hwm_profit - float(settings.trail_distance_usd),
-        )
+        target_locked = max(lock_usd, hwm_profit - distance_usd)
 
         # Convert locked NET profit -> SL price.
         # net = qty*(stop−entry) − qty*entry*fee − qty*stop*fee  (long)

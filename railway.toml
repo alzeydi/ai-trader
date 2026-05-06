@@ -88,9 +88,10 @@ LIQUIDITY_FILTER_CACHE_SEC = "300"
 
 # ----- Trailing stop (USD-denominated breakeven) -----
 TRAIL_ENABLED = "true"
-BREAKEVEN_ACTIVATE_USD = "5.0"
-BREAKEVEN_LOCK_USD = "2.5"
-TRAIL_DISTANCE_USD = "2.5"
+# Notional-pct trailing — fractions of (qty × entry).
+BREAKEVEN_ACTIVATE_PCT = "0.010"
+BREAKEVEN_LOCK_PCT = "0.0075"
+TRAIL_DISTANCE_PCT = "0.009"
 
 # ----- Persistence -----
 DB_PATH = "data/trades.db"
