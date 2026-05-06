@@ -286,6 +286,7 @@ class PositionMonitor:
 
         prev_hwm = float(trade.trail_high_water) if trade.trail_high_water is not None else 0.0
         hwm_profit = max(prev_hwm, net_profit)
+        was_armed = bool(trade.trail_armed)
 
         target_locked = max(
             float(settings.breakeven_lock_usd),
@@ -339,17 +340,18 @@ class PositionMonitor:
         if not tighter:
             return
 
-        old_stop = float(trade.stop)
         if not self.executor.replace_stop(trade.id, target_stop):
             return
-        if self.notifier is not None:
+        # Notify only on the first time trailing arms; subsequent SL tightening
+        # ticks stay silent and the user gets the next push only on close.
+        # Per-tick notifications spammed Telegram (one push every ~14 s on a
+        # fast-moving symbol).
+        if self.notifier is not None and not was_armed:
             try:
                 self.notifier.send(
-                    f"🔒 *TRAIL* `{trade.symbol}` {side.upper()}\n"
-                    f"SL `{old_stop:.6f}` → `{target_stop:.6f}`\n"
-                    f"Locked: `${target_locked:.2f}` net | "
-                    f"HWM: `${hwm_profit:.2f}` | "
-                    f"Now: `${net_profit:.2f}`"
+                    f"🔒 *TRAIL ARMED* `{trade.symbol}` {side.upper()}\n"
+                    f"SL → `{target_stop:.6f}`\n"
+                    f"Locked: `${target_locked:.2f}` net"
                 )
             except Exception as exc:  # noqa: BLE001
                 log.debug("trail notify failed: %s", exc)
