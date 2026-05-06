@@ -80,6 +80,11 @@ TIMEFRAME_EXECUTION = "15m"
 SIGNAL_MIN_CONFIDENCE = "0.6"
 MIN_CONFIDENCE = "0.5"
 
+# ----- Liquidity filter -----
+MIN_QUOTE_VOLUME_24H_USDT = "50000000"
+MAX_SPREAD_BPS = "5"
+LIQUIDITY_FILTER_CACHE_SEC = "300"
+
 # ----- Trailing stop (USD-denominated breakeven) -----
 TRAIL_ENABLED = "true"
 BREAKEVEN_ACTIVATE_USD = "5.0"

@@ -21,6 +21,7 @@ from sqlalchemy import text
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
+from src.data.liquidity import filter_by_liquidity
 from src.execution.monitor import PositionMonitor, fetch_open_positions
 from src.execution.orders import OrderExecutor
 from src.execution.trader import Trader
@@ -473,9 +474,18 @@ def main() -> None:
             realized_pnl=realized,
             unrealized_pnl=unrealized,
         )
-        results = trader.run_cycle(symbols)
+        # Per-cycle liquidity screen: drop symbols with thin 24h volume or
+        # wide spread before signal generation. Result is cached
+        # (settings.liquidity_filter_cache_sec) so we don't spam tickers
+        # on every cycle. Cycle-level (not startup-only) because liquidity
+        # drifts intraday; symbols that look fine at boot can dry up.
+        cycle_symbols = filter_by_liquidity(binance, symbols)
+        results = trader.run_cycle(cycle_symbols)
         accepted = sum(1 for r in results if r.accepted)
-        log.info("cycle complete: %d processed, %d accepted", len(results), accepted)
+        log.info(
+            "cycle complete: %d/%d processed, %d accepted",
+            len(cycle_symbols), len(symbols), accepted,
+        )
         time.sleep(settings.loop_interval_sec)
 
 
