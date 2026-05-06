@@ -36,8 +36,9 @@ BINANCE_TESTNET = "true"
 
 # ----- Anthropic / Claude -----
 ANTHROPIC_API_KEY = ""
-CLAUDE_MODEL = "claude-opus-4-7"
+CLAUDE_MODEL = "claude-sonnet-4-6"
 CLAUDE_MAX_TOKENS = "2048"
+LLM_VETO_COOLDOWN_SEC = "1800"
 
 # ----- Telegram -----
 TELEGRAM_BOT_TOKEN = ""

@@ -29,7 +29,8 @@ FUNDING_OVERHEATED_PCT = 0.05
 LIQUIDATION_SQUEEZE_USD = 50_000_000.0
 
 # Local cooldown to avoid paying Anthropic for identical decisions every cycle.
-LLM_VETO_COOLDOWN_SEC = 600
+# Read from settings at call time (see _cooldown_hit) so env tuning works
+# without code changes.
 # Minimum number of non-null context fields required before we even ask the LLM.
 # With fewer than this, an LLM call is wasted money — pre-skip deterministically.
 MIN_CONTEXT_FIELDS = 2
@@ -58,7 +59,7 @@ def _cooldown_hit(c: CandidateSignal) -> VetoResponse | None:
     if entry is None:
         return None
     ts, resp = entry
-    if time.monotonic() - ts > LLM_VETO_COOLDOWN_SEC:
+    if time.monotonic() - ts > settings.llm_veto_cooldown_sec:
         return None
     return resp
 
