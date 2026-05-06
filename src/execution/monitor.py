@@ -142,7 +142,18 @@ class PositionMonitor:
         return closed_symbols
 
     def _reconcile_orphan_orders(self) -> None:
-        """Cancel every conditional order on symbols that have no position."""
+        """Sweep stale conditional orders.
+
+        Two cases handled in one pass:
+        1. Symbol has reduce-only conditional orders but no live position
+           and no DB trade → wipe everything (classic orphans from a close
+           whose cleanup failed).
+        2. Symbol has a live DB trade but extra conditional orders beyond
+           the trade's tracked SL/TP → wipe the extras. This is the case
+           that bit us on ZECUSDT: a previous bracket survived the close
+           and the open's pre-sweep, so the symbol ended up with two SLs
+           and two TPs after a new entry.
+        """
         if self.client is None:
             return
         ex = self.client.exchange
@@ -161,14 +172,45 @@ class PositionMonitor:
                 symbols_with_orders.add(str(sym))
         if not symbols_with_orders:
             return
+
+        open_trades_by_symbol: dict[str, Trade] = {}
+        for t in list_open_trades(self.session_factory):
+            if not t.paper:
+                open_trades_by_symbol[t.symbol] = t
+
         live_symbols = {
             s.symbol for s in fetch_open_positions(self.client) if s.quantity > 0
         }
-        orphan_symbols = symbols_with_orders - live_symbols
-        for sym in orphan_symbols:
-            n = cancel_symbol_conditionals(ex, sym)
-            if n:
-                log.info("reconcile: %s had no position, wiped %s order(s)", sym, n)
+
+        for sym in symbols_with_orders:
+            trade = open_trades_by_symbol.get(sym)
+            if trade is None:
+                if sym in live_symbols:
+                    # Live position with no DB row — adoption hasn't run
+                    # yet for this cycle. Leave the orders alone; the next
+                    # adopt/reconcile pass on restart picks them up.
+                    continue
+                n = cancel_symbol_conditionals(ex, sym)
+                if n:
+                    log.info(
+                        "reconcile: %s had no position, wiped %s order(s)", sym, n
+                    )
+                continue
+
+            keep = tuple(
+                oid for oid in (trade.stop_order_id, trade.take_order_id) if oid
+            )
+            if not keep:
+                # DB row exists but we don't know which orders belong to it
+                # (e.g. a TP failed at placement and the SL id wasn't
+                # recorded). Don't touch — risk cancelling the live SL.
+                continue
+            n = cancel_symbol_conditionals(ex, sym, keep_ids=keep)
+            if n and n > 0:
+                log.info(
+                    "reconcile: %s had %d extra conditional(s) beyond tracked SL/TP",
+                    sym, n,
+                )
 
     # ------------------------------------------------------------------
     def _update_trail(self, trade: Trade) -> None:

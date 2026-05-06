@@ -98,14 +98,10 @@ def cancel_symbol_conditionals(
 
     open_orders = _fetch_open_orders_with_retry(ex, symbol)
     if open_orders is None:
-        # Couldn't enumerate — last-resort bulk again, ignoring failure.
-        if not use_bulk:
-            try:
-                ex.cancel_all_orders(symbol)
-                log.info("cancel_all_orders fallback OK on %s", symbol)
-                return -1
-            except Exception as exc:  # noqa: BLE001
-                log.warning("cancel_all_orders fallback %s failed: %s", symbol, exc)
+        # Couldn't enumerate. Bulk was already attempted at the top when
+        # use_bulk was True. With keep_ids/only_stop we MUST NOT bulk-
+        # cancel here — that would nuke the very orders we wanted to keep.
+        # Return -1 so the caller knows cleanup status is unknown.
         return -1
 
     cancelled = 0
@@ -375,6 +371,18 @@ class OrderExecutor:
                 "TP placement failed for %s (SL still active): %s",
                 order.symbol, tp_exc,
             )
+
+        # Post-place sweep: the pre-open `cancel_symbol_conditionals` can
+        # silently no-op if both bulk cancel and the verifying fetch fail
+        # (returns -1, caller can't tell). Now that we know the IDs of the
+        # SL/TP we just placed, cancel anything else still on the book.
+        # Without this, an old bracket from a previous position can survive
+        # alongside the new one (observed: 4 reduce-only orders on ZECUSDT).
+        keep_ids = tuple(oid for oid in (sl_id, tp_id) if oid)
+        try:
+            cancel_symbol_conditionals(ex, order.symbol, keep_ids=keep_ids)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("post-open sweep failed for %s: %s", order.symbol, exc)
 
         trade_id = self._record_open(
             order,
