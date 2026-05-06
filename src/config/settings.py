@@ -84,7 +84,18 @@ class Settings(BaseSettings):
     # against a +32 % 36-hour uptrend). Block B when EMA50(1h) has drifted
     # against the trade direction by more than `b_trend_block_pct` over
     # the last `b_trend_lookback_bars` hours.
-    b_trend_block_pct: float = 0.02      # 2 % drift across the window
+    #
+    # Tuning history: started at 2 %, but that turned out to be far too
+    # tight — IO/USDT 2026-05-06 pumped +47 % in 4 hours without any news,
+    # the textbook Type-B short setup, and the gate killed it at slope
+    # 9.01 %. The slope-as-proxy-for-fundamentals heuristic is too noisy:
+    # a sentiment-driven move and a one-shot squeeze look identical at the
+    # EMA50(1h) level. Raised to 10 % so the gate only blocks truly
+    # extreme parabolas (>10 % drift in 12 h on EMA50, where another leg
+    # is genuinely likely); the veto layer decides «is there a catalyst»
+    # using funding / OI / liquidations, which actually distinguish
+    # news-driven moves from clean blowoffs.
+    b_trend_block_pct: float = 0.10      # 10 % drift across the window
     b_trend_lookback_bars: int = 12      # 12 hours of 1h closes
     # After a losing Type-B trade closes on a symbol, suppress new Type-B
     # entries on that symbol for this many hours. One bad fade is usually a
