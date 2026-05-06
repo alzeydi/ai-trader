@@ -349,9 +349,19 @@ class OrderExecutor:
                 )
 
             close_price = self._mark_price(symbol) or row.entry
-            pnl = self._compute_pnl(
+            gross_pnl = self._compute_pnl(
                 side=row.side, qty=row.quantity, entry=row.entry, exit_=close_price
             )
+            # Mirror live + backtest accounting: round-trip taker fees so
+            # paper, live and backtest produce comparable PnL on the same
+            # trades. Without this, paper systematically over-estimates
+            # net returns vs the other two paths.
+            taker_pct = float(settings.taker_fee_pct)
+            fees = (
+                float(row.quantity) * float(row.entry) * taker_pct
+                + float(row.quantity) * float(close_price) * taker_pct
+            )
+            pnl = gross_pnl - fees
             row.closed_at = datetime.now(tz=timezone.utc)
             row.close_price = close_price
             row.close_reason = reason
@@ -360,8 +370,9 @@ class OrderExecutor:
             trade_id = row.id
 
         log.info(
-            "PAPER CLOSE %s reason=%s exit=%.4f pnl=%.2f trade_id=%s",
-            symbol, reason, close_price, pnl, trade_id,
+            "PAPER CLOSE %s reason=%s exit=%.4f gross=%.2f fees=%.2f net_pnl=%.2f "
+            "trade_id=%s",
+            symbol, reason, close_price, gross_pnl, fees, pnl, trade_id,
         )
         return ExecutionResult(
             success=True,
@@ -573,6 +584,15 @@ class OrderExecutor:
             side = row.side
             stop_oid = row.stop_order_id
             take_oid = row.take_order_id
+            entry_oid = row.entry_order_id
+            entry_px = float(row.entry) if row.entry is not None else 0.0
+            opened_at = row.opened_at
+
+        opened_at_ms: int | None = None
+        if opened_at is not None:
+            if opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=timezone.utc)
+            opened_at_ms = int(opened_at.timestamp() * 1000)
 
         fill: float = 0.0
 
@@ -635,17 +655,48 @@ class OrderExecutor:
                 )
             fill = float(close_resp.get("average") or close_resp.get("price") or 0.0)
 
+        # Recover ground-truth exit VWAP and fees from userTrades. The
+        # `fetch_order` path above is unreliable for SL/TP because conditional
+        # orders moved to the algo endpoint (Binance migration 2025-12-09)
+        # and the create_order response only carries an average for the
+        # market-close branch. Relying on `_mark_price` after the fact
+        # silently mis-prices closes that slipped through the trigger
+        # (observed STX/USDT case: SL=0.2490 → fill VWAP=0.2482, ~$5
+        # PnL error). userTrades is the only source that always reflects
+        # the actual fills, regardless of trigger type.
+        # Binance derivatives trade endpoint:
+        # https://developers.binance.com/docs/derivatives/usds-margined-futures/trade
+        my_trades: list[dict[str, Any]] = []
+        if opened_at_ms is not None:
+            try:
+                my_trades = ex.fetch_my_trades(symbol, since=opened_at_ms) or []
+            except Exception as exc:  # noqa: BLE001
+                log.warning("fetch_my_trades failed for %s: %s", symbol, exc)
+
+        exit_fills, entry_fills = self._split_fills(my_trades, entry_oid)
+        vwap_exit = self._vwap(exit_fills)
+        fee_exit = self._sum_fee_usdt(exit_fills)
+        fee_entry = self._sum_fee_usdt(entry_fills)
+
+        if vwap_exit > 0:
+            fill = vwap_exit
         if fill <= 0:
             fill = self._mark_price(symbol) or 0.0
         if fill <= 0:
             # Last-resort fallback so we still record a closure.
-            with self.session_factory() as s:
-                fallback_row = s.execute(
-                    select(Trade).where(Trade.id == row_id)
-                ).scalar_one()
-                fill = float(fallback_row.entry)
+            fill = entry_px
 
-        pnl = self._compute_pnl(side=side, qty=qty, entry=row.entry, exit_=fill)
+        # If userTrades didn't surface fees (BNB-burn currency, or fetch
+        # failed entirely), approximate from the configured taker rate.
+        # Note: ignores BNB-burn discounts → conservative (overstates fees).
+        taker_pct = float(settings.taker_fee_pct)
+        if fee_entry <= 0:
+            fee_entry = qty * entry_px * taker_pct
+        if fee_exit <= 0:
+            fee_exit = qty * fill * taker_pct
+
+        gross_pnl = self._compute_pnl(side=side, qty=qty, entry=entry_px, exit_=fill)
+        pnl = gross_pnl - fee_entry - fee_exit
 
         with self.session_factory() as s:
             row = s.execute(select(Trade).where(Trade.id == row_id)).scalar_one()
@@ -656,8 +707,9 @@ class OrderExecutor:
             s.commit()
 
         log.info(
-            "LIVE CLOSE %s reason=%s exit=%.4f pnl=%.2f trade_id=%s",
-            symbol, reason, fill, pnl, row_id,
+            "LIVE CLOSE %s reason=%s exit=%.4f gross=%.2f fees=%.2f net_pnl=%.2f "
+            "trade_id=%s",
+            symbol, reason, fill, gross_pnl, fee_entry + fee_exit, pnl, row_id,
         )
         return ExecutionResult(
             success=True,
@@ -769,6 +821,72 @@ class OrderExecutor:
         if side == "long":
             return float(qty) * (float(exit_) - float(entry))
         return float(qty) * (float(entry) - float(exit_))
+
+    @staticmethod
+    def _split_fills(
+        trades: list[dict[str, Any]],
+        entry_order_id: str | None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Partition userTrades into (exit_fills, entry_fills).
+
+        Exit fills = reduceOnly trades (closing/decreasing the position).
+        Entry fills = trades belonging to the recorded entry order id, OR
+        any non-reduceOnly trades if the order id can't be matched (the
+        entry response in `_open_live` is the only place we capture the
+        entry id, so a missing id falls back to the side heuristic).
+        """
+        exits: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        for t in trades:
+            info = t.get("info") or {}
+            ro = info.get("reduceOnly")
+            is_reduce = ro in (True, "true") or t.get("reduceOnly") is True
+            if is_reduce:
+                exits.append(t)
+                continue
+            oid = t.get("order") or info.get("orderId")
+            if entry_order_id and str(oid) == str(entry_order_id):
+                entries.append(t)
+            elif not entry_order_id:
+                entries.append(t)
+        return exits, entries
+
+    @staticmethod
+    def _vwap(fills: list[dict[str, Any]]) -> float:
+        notional = 0.0
+        amount = 0.0
+        for f in fills:
+            try:
+                p = float(f.get("price") or 0.0)
+                a = float(f.get("amount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if p > 0 and a > 0:
+                notional += p * a
+                amount += a
+        return notional / amount if amount > 0 else 0.0
+
+    @staticmethod
+    def _sum_fee_usdt(fills: list[dict[str, Any]]) -> float:
+        """Sum trade fees in USDT.
+
+        Only USDT-denominated fees are counted. BNB-burn fees are ignored
+        here — caller falls back to `taker_fee_pct` estimate. We don't
+        convert BNB→USDT mid-close to avoid an extra ticker fetch on every
+        position closure (and BNB-burn is opt-in; default is USDT).
+        """
+        total = 0.0
+        for f in fills:
+            fee = f.get("fee") or {}
+            ccy = (fee.get("currency") or "").upper()
+            cost = fee.get("cost")
+            if cost is None or ccy not in ("USDT", ""):
+                continue
+            try:
+                total += float(cost)
+            except (TypeError, ValueError):
+                continue
+        return total
 
     def _mark_price(self, symbol: str) -> float | None:
         if self.client is None:
