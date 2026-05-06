@@ -454,8 +454,19 @@ class PositionMonitor:
         log.info("monitor: closed %s reason=%s pnl=%s", trade.symbol, reason, result.pnl_usd)
         if self.notifier is not None and result.pnl_usd is not None:
             try:
-                self.notifier.close(trade.symbol, result.pnl_usd)
+                snapshot = {
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "entry": float(trade.entry or 0.0),
+                    "exit": float(result.fill_price or trade.entry or 0.0),
+                    "quantity": float(trade.quantity or 0.0),
+                    "pnl_usd": float(result.pnl_usd),
+                    "leverage": int(trade.leverage or 1),
+                    "fees": float(trade.fees or 0.0),
+                    "close_reason": reason,
+                }
+                self.notifier.send_close_signal(snapshot)
             except Exception as exc:  # noqa: BLE001
-                log.warning("notifier.close failed: %s", exc)
+                log.warning("notifier close failed: %s", exc)
         if self.safety is not None and result.pnl_usd is not None:
             self.safety.check_after_close(result.pnl_usd)

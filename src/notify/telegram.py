@@ -232,6 +232,31 @@ class TelegramNotifier:
         self.send("\n".join(lines))
 
     # ------------------------------------------------------------------
+    # Daily report (scheduled at 21:00 Asia/Dubai by main.py)
+    # ------------------------------------------------------------------
+    def send_daily_report(self, session_factory: Any) -> None:
+        """Build and send the daily Dubai-day summary.
+
+        Imported lazily so the notify module stays importable in tests
+        that mock out the DB layer entirely.
+        """
+        from src.notify.daily_report import (
+            build_daily_report,
+            format_daily_report_telegram,
+        )
+
+        try:
+            report = build_daily_report(session_factory)
+        except Exception as exc:  # noqa: BLE001
+            log.exception("daily_report: build failed: %s", exc)
+            self.send_critical(f"daily_report build failed: {exc}")
+            return
+        try:
+            self.send(format_daily_report_telegram(report))
+        except Exception as exc:  # noqa: BLE001
+            log.exception("daily_report: send failed: %s", exc)
+
+    # ------------------------------------------------------------------
     # Critical / errors
     # ------------------------------------------------------------------
     def send_critical(self, text: str) -> None:

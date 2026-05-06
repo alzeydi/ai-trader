@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import yaml
@@ -329,6 +329,38 @@ def _close_stale_paper_trades(session_factory) -> int:
     return len(stale)
 
 
+def _daily_report_scheduler(notifier, session_factory) -> None:
+    """Send the daily summary every day at 21:00 Asia/Dubai.
+
+    Computes the next 21:00 Dubai from `now` on every iteration, so a
+    container restart never causes a duplicate or missed send: if we wake
+    after today's 21:00 we automatically schedule for tomorrow.
+    """
+    from zoneinfo import ZoneInfo
+
+    log = logging.getLogger("daily-report")
+    dubai_tz = ZoneInfo("Asia/Dubai")
+    while True:
+        now_dubai = datetime.now(tz=dubai_tz)
+        target = now_dubai.replace(hour=21, minute=0, second=0, microsecond=0)
+        if now_dubai >= target:
+            target = target + timedelta(days=1)
+        sleep_sec = (target - now_dubai).total_seconds()
+        log.info(
+            "daily report scheduled at %s Dubai (sleeping %.0fs)",
+            target.isoformat(timespec="seconds"), sleep_sec,
+        )
+        time.sleep(max(1.0, sleep_sec))
+        try:
+            notifier.send_daily_report(session_factory)
+            log.info("daily report sent")
+        except Exception as exc:  # noqa: BLE001
+            log.exception("daily report send failed: %s", exc)
+        # Tiny guard so the next iteration's "now" is past the target,
+        # preventing an immediate re-fire if the send returned in <1s.
+        time.sleep(60)
+
+
 def _filter_known_symbols(binance, symbols, log) -> list[str]:
     """Drop symbols the exchange does not list, warn loudly. Avoids spamming
     BadSymbol errors every cycle for typos or pairs that exist on mainnet
@@ -424,6 +456,14 @@ def main() -> None:
         name="position-monitor",
     )
     monitor_thread.start()
+
+    daily_report_thread = threading.Thread(
+        target=_daily_report_scheduler,
+        args=(notifier, session_factory),
+        daemon=True,
+        name="daily-report-scheduler",
+    )
+    daily_report_thread.start()
 
     symbols = _load_symbols()
     symbols = _filter_known_symbols(binance, symbols, log)
