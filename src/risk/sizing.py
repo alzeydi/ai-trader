@@ -46,6 +46,7 @@ _RISK_BY_TYPE: dict[str, str] = {
     "A": "risk_per_trade_type_a",
     "B": "risk_per_trade_type_b",
     "C": "risk_per_trade_type_c",
+    "D": "risk_per_trade_type_d",
 }
 
 

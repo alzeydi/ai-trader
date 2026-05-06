@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     risk_per_trade_type_a: float = 0.02  # ratio, e.g. 0.02 == 2 % of equity
     risk_per_trade_type_b: float = 0.01
     risk_per_trade_type_c: float = 0.01
+    risk_per_trade_type_d: float = 0.02  # breakouts share A's conviction tier
     # Per-trade margin policy cap. Without this the risk-USD-based sizing
     # produces wildly different notionals across symbols (e.g. ZIL at $0.004
     # gets a $9.6k notional vs DOGE at $0.11 with $90), because qty =
@@ -125,6 +126,15 @@ class Settings(BaseSettings):
     # entries on that symbol for this many hours. One bad fade is usually a
     # regime signal; let the bot stop re-arming it against the same coin.
     b_loss_cooldown_hours: int = 6
+    # ----- Type D breakout -----
+    # 1h close above (or below) the high (or low) of the prior
+    # `d_breakout_lookback_bars` 1h bars, with 15m volume confirmation.
+    # `d_max_excess_pct` filters out stale breakouts where price has
+    # already run too far past the level — chasing a breakout 5 % past
+    # invalidation has negative edge.
+    d_breakout_lookback_bars: int = 20
+    d_min_vol_ratio: float = 1.3
+    d_max_excess_pct: float = 0.02
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
     # Binance USDT-M futures rejects any non-reduce-only order whose notional

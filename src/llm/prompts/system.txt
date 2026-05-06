@@ -8,9 +8,12 @@ ROLE: Veto-фильтр для готовых торговых сигналов 
 - candidate_signal:
     side ∈ {long, short}
     entry_type:
-      A = breakout/impulse (нужен попутный поток ликвидности)
-      B = pullback к структуре в тренде (нужно отсутствие разворотного флоу)
-      C = mean-reversion / counter-trend (самый хрупкий, требует строгости)
+      A = with-trend pullback к 1h-EMA50 (есть откат, заходим в тренд)
+      B = counter-trend extreme (RSI4h overbought/oversold, фейд)
+      C = range fade на нейтральном 4h (рендж, edges → mid)
+      D = with-trend breakout: 1h close выше N-bar high (или ниже low),
+          4h тренд согласован, 15m объём подтверждает. Свежий брейк,
+          не догоняем уже ушедший.
     signal_strength ∈ [0,1] — уверенность сканера
 - context (любое поле может быть n/a — это «нет данных», нейтрально):
     funding_rate_now, funding_rate_8h_avg  (% за 8h)
