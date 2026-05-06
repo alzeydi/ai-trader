@@ -37,17 +37,20 @@ def _score_a(ema_gap_pct: float, rsi_delta: float, vol_ratio: float) -> float:
     trend   = min(abs(ema_gap_pct) / 0.08, 1.0) * 0.40
     rev     = min(abs(rsi_delta)   / 8.0,  1.0) * 0.35
     volume  = min(max(vol_ratio - 1.0, 0.0) / 1.0, 1.0) * 0.25
-    return round(min(trend + rev + volume, 0.99), 4)
+    # Round to 2 decimals so the value compared against signal_min_confidence
+    # matches what is printed in logs (%.2f). Sub-cent precision was false:
+    # 0.4994 used to log as "0.50" while still failing a 0.50 floor.
+    return round(min(trend + rev + volume, 0.99), 2)
 
 
 def _score_b(rsi_4h: float, side: str, hist_delta: float) -> float:
     excess   = (rsi_4h - 75) / 25.0 if side == "short" else (25 - rsi_4h) / 25.0
     reversal = min(abs(hist_delta) / 0.01, 1.0) * 0.50
-    return round(min(0.50 * min(excess, 1.0) + reversal, 0.99), 4)
+    return round(min(0.50 * min(excess, 1.0) + reversal, 0.99), 2)
 
 
 def _score_c(proximity: float, rsi_delta: float) -> float:
-    return round(min(0.50 * proximity + 0.50 * min(abs(rsi_delta) / 8.0, 1.0), 0.99), 4)
+    return round(min(0.50 * proximity + 0.50 * min(abs(rsi_delta) / 8.0, 1.0), 0.99), 2)
 
 
 # ── indicator snapshot ─────────────────────────────────────────────────────
