@@ -31,8 +31,14 @@ class Settings(BaseSettings):
 
     # ----- Anthropic / Claude -----
     anthropic_api_key: SecretStr = Field(default=SecretStr(""))
-    claude_model: str = "claude-opus-4-7"
+    claude_model: str = "claude-sonnet-4-6"
     claude_max_tokens: int = 2048
+    # Per-(symbol, side, entry_type) cooldown for the veto LLM. While a
+    # decision is cached, repeated cycles reuse it instead of paying for an
+    # identical call. Bumped to 1800s after the prompt rework: the new
+    # SKIP-criteria prompt is more deterministic on the same input, so a
+    # longer cache is safe and meaningfully cuts spend.
+    llm_veto_cooldown_sec: int = 1800
 
     # ----- Telegram -----
     telegram_bot_token: SecretStr = Field(default=SecretStr(""))
