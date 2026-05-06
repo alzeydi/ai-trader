@@ -159,11 +159,19 @@ class Trader:
         exec_result = self.executor.open_position(order)
         if exec_result.success and self.notifier is not None:
             try:
-                self.notifier.entry(
-                    symbol, order.side, order.quantity, order.entry_price
+                # Use the rich entry payload so users always see margin used,
+                # leverage, R:R and the LLM rationale — not just qty/price.
+                margin_usd = (
+                    order.entry_price * order.quantity / order.leverage
+                    if order.leverage else order.entry_price * order.quantity
+                )
+                self.notifier.send_entry_signal(
+                    order,
+                    margin_usd=margin_usd,
+                    ai_reasoning=veto.reasoning,
                 )
             except Exception as exc:  # noqa: BLE001
-                log.warning("notifier.entry failed: %s", exc)
+                log.warning("notifier entry failed: %s", exc)
 
         return CycleResult(
             symbol=symbol,

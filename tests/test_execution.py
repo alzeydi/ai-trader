@@ -265,7 +265,9 @@ def test_trader_run_cycle_paper_mode_records_trade(monkeypatch):
 
     # The trade is now persisted as open.
     assert count_open_trades(sf) == 1
-    notifier.entry.assert_called_once()
+    notifier.send_entry_signal.assert_called_once()
+    _, kwargs = notifier.send_entry_signal.call_args
+    assert "margin_usd" in kwargs and kwargs["margin_usd"] > 0
 
 
 def test_trader_run_cycle_rejects_on_low_confidence(monkeypatch):

@@ -3,10 +3,11 @@
 Pages
 -----
 1. Overview     — equity curve vs BTC buy&hold, Sharpe, Sortino, Max DD
-2. Trades       — table of all trades with filters
-3. AI Decisions — LLM decision log (with raw JSON) + cost-by-day chart
-4. Positions    — currently open positions (live)
-5. Settings     — read-only view of `.env` and PAPER_TRADING toggle
+2. Daily Report — today's trades, by strategy / side, AI veto stats
+3. Trades       — table of all trades with filters
+4. AI Decisions — LLM decision log (with raw JSON) + cost-by-day chart
+5. Positions    — currently open positions (live)
+6. Settings     — read-only view of `.env` and PAPER_TRADING toggle
 
 Run with `streamlit run src/dashboard/app.py`.
 """
@@ -25,6 +26,10 @@ import streamlit as st
 from sqlalchemy import select
 
 from src.config import settings
+from src.notify.daily_report import (
+    build_daily_report,
+    format_daily_report_telegram,
+)
 from src.persistence.db import (
     AIDecision,
     EquitySnapshot,
@@ -250,6 +255,107 @@ def page_overview() -> None:
     st.line_chart(chart_df)
 
 
+def page_daily_report() -> None:
+    """Today's trading day in one screen, mirroring the 21:00 Telegram digest."""
+    st.header("Daily Report")
+    st.caption(
+        "Window: 00:00 → now (Asia/Dubai). The same numbers are pushed to "
+        "Telegram nightly at 21:00 Dubai."
+    )
+
+    sf = _session_factory()
+    report = build_daily_report(sf)
+    st.caption(f"Day: `{report.day_label}`")
+
+    c1, c2, c3, c4 = st.columns(4)
+    eq_end = report.equity_end_usd
+    eq_change = report.equity_change_usd
+    c1.metric(
+        "Equity (USDT)",
+        f"{eq_end:,.2f}" if eq_end is not None else "—",
+        f"{eq_change:+,.2f}" if eq_change is not None else None,
+    )
+    c2.metric("Realised PnL", f"{report.realized_pnl_usd:+,.2f}")
+    c3.metric("Trades closed", str(report.n_closed))
+    c4.metric(
+        "Win rate",
+        f"{report.win_rate:.0f}%" if (report.wins + report.losses) else "—",
+        f"{report.wins}W/{report.losses}L",
+    )
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric(
+        "Trades opened",
+        str(report.n_opened),
+        f"{report.n_long_opened} long / {report.n_short_opened} short",
+    )
+    c6.metric("Open now", str(report.n_open_now))
+    c7.metric("Fees today", f"{report.fees_usd:,.2f}")
+    c8.metric(
+        "Unrealised PnL",
+        f"{report.unrealized_pnl_usd:+,.2f}"
+        if report.unrealized_pnl_usd is not None else "—",
+    )
+
+    if report.n_closed:
+        st.subheader("Best / worst")
+        cols = st.columns(2)
+        cols[0].success(
+            f"🏆 `{report.best_symbol}`  {report.best_trade_usd:+,.2f} USDT"
+        )
+        cols[1].error(
+            f"💀 `{report.worst_symbol}`  {report.worst_trade_usd:+,.2f} USDT"
+        )
+
+    if report.by_strategy:
+        st.subheader("By strategy")
+        rows = [
+            {
+                "type": s.type,
+                "closed": s.n_closed,
+                "pnl_usd": s.pnl_usd,
+                "win_rate_%": s.win_rate,
+                "wins": s.wins,
+                "losses": s.losses,
+                "avg_pnl_pct": s.avg_pnl_pct,
+                "opened_long": s.n_long,
+                "opened_short": s.n_short,
+            }
+            for s in report.by_strategy
+        ]
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.info("No trades opened or closed today yet.")
+
+    if report.by_side:
+        st.subheader("By side (closed)")
+        rows = [
+            {
+                "side": ss.side,
+                "closed": ss.n_closed,
+                "pnl_usd": ss.pnl_usd,
+                "win_rate_%": ss.win_rate,
+                "wins": ss.wins,
+                "losses": ss.losses,
+            }
+            for ss in report.by_side
+        ]
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+    st.subheader("AI veto")
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Decisions", str(report.ai_decisions_total))
+    a2.metric(
+        "Accepted",
+        str(report.ai_decisions_accepted),
+        f"{report.acceptance_rate:.0f}%" if report.ai_decisions_total else None,
+    )
+    a3.metric("LLM cost", f"${report.ai_cost_usd:,.4f}")
+
+    with st.expander("Telegram preview"):
+        st.code(format_daily_report_telegram(report))
+
+
 def page_trades() -> None:
     st.header("Trades")
     trades = load_trades()
@@ -430,6 +536,7 @@ def page_settings() -> None:
 
 PAGES = {
     "Overview": page_overview,
+    "Daily Report": page_daily_report,
     "Trades": page_trades,
     "AI Decisions": page_ai_decisions,
     "Positions": page_positions,
