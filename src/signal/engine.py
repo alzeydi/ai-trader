@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from src.config import settings
 from src.data.binance_client import BinanceClient
 from src.data.indicators import atr14, ema, macd, rsi14, swing_high_low
 from src.signal.types import CandidateSignal
@@ -85,9 +86,24 @@ class SignalEngine:
 
         # ── 1h indicators ──────────────────────────────────────────────────
         c1 = df_1h["close"]
-        ema50_1h = ema(c1, 50).iloc[-1]
+        ema50_1h_series = ema(c1, 50)
+        ema50_1h = ema50_1h_series.iloc[-1]
         close_1h = float(c1.iloc[-1])
         atr_1h_val = float(atr14(df_1h).iloc[-1])
+        # Slope of EMA50(1h) over the last `b_trend_lookback_bars`. Used by
+        # the Type-B gate below: fading a coin whose 1h trend has been
+        # running hard against us is a tax on the strategy.
+        b_lookback = max(2, int(settings.b_trend_lookback_bars))
+        if len(ema50_1h_series) > b_lookback:
+            ema50_1h_then = float(ema50_1h_series.iloc[-1 - b_lookback])
+            if ema50_1h_then > 0:
+                ema50_1h_slope_pct = (
+                    float(ema50_1h) - ema50_1h_then
+                ) / ema50_1h_then
+            else:
+                ema50_1h_slope_pct = 0.0
+        else:
+            ema50_1h_slope_pct = 0.0
         swings   = swing_high_low(df_1h, lookback=20)
         sh_valid = swings["swing_high"].dropna()
         sl_valid = swings["swing_low"].dropna()
@@ -169,30 +185,47 @@ class SignalEngine:
         # TYPE B — counter-trend extreme
         # ════════════════════════════════════════════════════════════════════
         hist_delta_15 = float(hist_15.iloc[-1]) - float(hist_15.iloc[-2])
+        b_block = float(settings.b_trend_block_pct)
 
         if float(rsi_4h) > 75 and rsi_down:
-            strength = _score_b(float(rsi_4h), "short", hist_delta_15)
-            if strength >= 0.20:
-                log.info("%s: Type B SHORT (RSI4h=%.1f) strength=%.2f",
-                         symbol, rsi_4h, strength)
-                return CandidateSignal(
-                    timestamp=now, symbol=symbol, side="short",
-                    entry_type="B", signal_strength=strength,
-                    entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+            # Refuse to short into a 1h that has been climbing — the most
+            # common failure mode of Type B.
+            if ema50_1h_slope_pct > b_block:
+                log.info(
+                    "%s: Type B SHORT blocked by 1h trend gate "
+                    "(slope=%.2f%% > %.2f%%)",
+                    symbol, ema50_1h_slope_pct * 100, b_block * 100,
                 )
+            else:
+                strength = _score_b(float(rsi_4h), "short", hist_delta_15)
+                if strength >= 0.20:
+                    log.info("%s: Type B SHORT (RSI4h=%.1f) strength=%.2f",
+                             symbol, rsi_4h, strength)
+                    return CandidateSignal(
+                        timestamp=now, symbol=symbol, side="short",
+                        entry_type="B", signal_strength=strength,
+                        entry_price_ref=close_4h, atr_14=atr_val,
+                        swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+                    )
 
         if float(rsi_4h) < 25 and rsi_up:
-            strength = _score_b(float(rsi_4h), "long", hist_delta_15)
-            if strength >= 0.20:
-                log.info("%s: Type B LONG (RSI4h=%.1f) strength=%.2f",
-                         symbol, rsi_4h, strength)
-                return CandidateSignal(
-                    timestamp=now, symbol=symbol, side="long",
-                    entry_type="B", signal_strength=strength,
-                    entry_price_ref=close_4h, atr_14=atr_val,
-                    swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+            if ema50_1h_slope_pct < -b_block:
+                log.info(
+                    "%s: Type B LONG blocked by 1h trend gate "
+                    "(slope=%.2f%% < -%.2f%%)",
+                    symbol, ema50_1h_slope_pct * 100, b_block * 100,
                 )
+            else:
+                strength = _score_b(float(rsi_4h), "long", hist_delta_15)
+                if strength >= 0.20:
+                    log.info("%s: Type B LONG (RSI4h=%.1f) strength=%.2f",
+                             symbol, rsi_4h, strength)
+                    return CandidateSignal(
+                        timestamp=now, symbol=symbol, side="long",
+                        entry_type="B", signal_strength=strength,
+                        entry_price_ref=close_4h, atr_14=atr_val,
+                        swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+                    )
 
         # ════════════════════════════════════════════════════════════════════
         # TYPE C — range fade (only when 4h is neutral)

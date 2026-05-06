@@ -25,6 +25,7 @@ from src.persistence.db import (
     SessionFactory,
     count_open_trades,
     daily_realized_pnl,
+    has_recent_losing_b_trade,
     make_session_factory,
 )
 from src.risk.limits import can_take_signal
@@ -95,6 +96,23 @@ class Trader:
         signal = self.engine.generate_signals(symbol)
         if signal is None:
             return CycleResult(symbol=symbol, accepted=False, reason="no candidate")
+
+        # 1b. Type-B post-loss cooldown. A single losing fade on a symbol
+        # within the cooldown window is treated as a regime signal; suppress
+        # new B candidates on that symbol until it expires. Cheaper than a
+        # veto call — we never even ask the LLM.
+        if signal.entry_type == "B" and has_recent_losing_b_trade(
+            self.session_factory,
+            symbol,
+            settings.b_loss_cooldown_hours,
+        ):
+            log.info("%s: Type B suppressed by post-loss cooldown", symbol)
+            return CycleResult(
+                symbol=symbol,
+                accepted=False,
+                reason="b_loss_cooldown",
+                candidate=signal,
+            )
 
         # 2. Build veto inputs from market context + DB-derived account state.
         ctx_payload = self._market_context_payload(signal)

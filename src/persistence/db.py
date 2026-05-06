@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -271,6 +271,35 @@ def get_last_n_closed_trades(
             .limit(n)
         ).scalars().all()
     return list(rows)
+
+
+def has_recent_losing_b_trade(
+    session_factory: SessionFactory,
+    symbol: str,
+    cooldown_hours: int,
+) -> bool:
+    """True iff a Type-B trade on `symbol` closed in the last
+    `cooldown_hours` with negative PnL.
+
+    Drives the per-symbol Type-B cooldown: one losing fade is treated as a
+    regime signal, so we stop firing more B's on that symbol until the
+    cooldown elapses.
+    """
+    if cooldown_hours <= 0:
+        return False
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=cooldown_hours)
+    with session_factory() as s:
+        row = s.execute(
+            select(Trade)
+            .where(Trade.symbol == symbol)
+            .where(Trade.type == "B")
+            .where(Trade.closed_at.isnot(None))
+            .where(Trade.closed_at >= cutoff)
+            .where(Trade.pnl_usd < 0)
+            .order_by(Trade.closed_at.desc())
+            .limit(1)
+        ).scalars().first()
+    return row is not None
 
 
 def count_open_trades(session_factory: SessionFactory) -> int:
