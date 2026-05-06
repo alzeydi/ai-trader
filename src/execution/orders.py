@@ -65,6 +65,119 @@ def _fetch_open_orders_with_retry(ex, symbol: str, attempts: int = 3) -> list[di
     return None
 
 
+# ── Algo (conditional) order endpoints ─────────────────────────────────────
+#
+# 2025-12-09: Binance USDⓈ-M Futures migrated all conditional orders
+# (STOP_MARKET, TAKE_PROFIT_MARKET, TRAILING_STOP_MARKET, STOP, TAKE_PROFIT)
+# from the legacy /fapi/v1/order endpoint to a separate "Algo Service" at
+# /fapi/v1/algoOrder. The legacy bulk endpoint /fapi/v1/allOpenOrders
+# (used by ccxt's `cancel_all_orders`) does NOT touch this new bucket, and
+# `fetch_open_orders` doesn't return entries from it either. That is why
+# orphan SL/TP keep piling up on a symbol after a position closes — the
+# orders are physically there but in a bucket our cleanup never reads.
+#
+# These helpers hit the new endpoints directly. They prefer ccxt's implicit
+# methods when available (newer versions register them as
+# `fapiPrivateDeleteAlgoOpenOrders` etc.) and fall back to a raw signed
+# `request()` call if not.
+
+def _algo_request(
+    ex,
+    path: str,
+    method: str,
+    params: dict[str, Any],
+) -> Any:
+    """Invoke an `fapiPrivate` algo endpoint, preferring ccxt's implicit
+    method if registered, else falling back to the generic `request`.
+    Re-raises on failure so the caller can decide how to log/recover.
+    """
+    method_name = f"fapiPrivate{method.title()}{path[0].upper()}{path[1:]}"
+    impl = getattr(ex, method_name, None)
+    if impl is not None:
+        return impl(params)
+    return ex.request(path, api="fapiPrivate", method=method, params=params)
+
+
+def _cancel_algo_open_orders(ex, symbol: str) -> bool:
+    """Bulk-cancel algo (conditional) orders on `symbol`.
+
+    Endpoint: DELETE /fapi/v1/algoOpenOrders. Returns True on success.
+    """
+    try:
+        market = ex.market(symbol)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("algo cancel: market lookup %s failed: %s", symbol, exc)
+        return False
+    try:
+        _algo_request(ex, "algoOpenOrders", "DELETE", {"symbol": market["id"]})
+        log.info("algoOpenOrders DELETE OK on %s", symbol)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("algoOpenOrders DELETE %s failed: %s", symbol, exc)
+        return False
+
+
+def _fetch_algo_open_orders(ex, symbol: str | None = None) -> list[dict[str, Any]]:
+    """List open algo orders. With `symbol=None`, returns across the whole
+    account. Always returns a list — empty on any failure or missing
+    endpoint, since the caller can degrade gracefully (regular bucket
+    is still being cleaned).
+    """
+    params: dict[str, Any] = {}
+    if symbol is not None:
+        try:
+            market = ex.market(symbol)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("algo fetch: market lookup %s failed: %s", symbol, exc)
+            return []
+        params["symbol"] = market["id"]
+    try:
+        resp = _algo_request(ex, "openAlgoOrders", "GET", params)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("openAlgoOrders GET (%s) failed: %s", symbol or "ALL", exc)
+        return []
+    # Binance wraps the array as {"orders": [...]}; some ccxt versions
+    # may already unwrap it. Handle both.
+    if isinstance(resp, dict):
+        orders = resp.get("orders") or resp.get("data") or []
+    elif isinstance(resp, list):
+        orders = resp
+    else:
+        orders = []
+    return list(orders)
+
+
+def _algo_id(o: dict[str, Any]) -> str:
+    """Pull algoId out of either the unified ccxt shape or raw Binance
+    response shape. Returns "" if missing.
+    """
+    info = o.get("info") if isinstance(o.get("info"), dict) else None
+    for src in (o, info):
+        if not src:
+            continue
+        for key in ("algoId", "algoID", "id"):
+            v = src.get(key)
+            if v not in (None, ""):
+                return str(v)
+    return ""
+
+
+def _cancel_algo_order(ex, symbol: str, algo_id: str) -> bool:
+    try:
+        market = ex.market(symbol)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        _algo_request(
+            ex, "algoOrder", "DELETE",
+            {"symbol": market["id"], "algoId": algo_id},
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        log.warning("algoOrder DELETE %s/%s failed: %s", symbol, algo_id, exc)
+        return False
+
+
 def cancel_symbol_conditionals(
     ex,
     symbol: str,
@@ -78,40 +191,56 @@ def cancel_symbol_conditionals(
     placed SL during a trail tick). With `only_stop=True`, leaves
     TAKE_PROFIT orders alone — used by trailing-stop replacement.
 
-    First tries Binance's bulk `cancel_all_orders`, which atomically wipes
-    everything on the symbol — this is the only reliable way to guarantee
-    no ghosts when individual cancels race against a fill or fetch fails.
-    Falls back to per-order cancel only when bulk path can't be used
-    (orders to keep, only_stop filter, or method missing).
+    Hits BOTH Binance buckets:
+      * legacy `cancel_all_orders` (DELETE /fapi/v1/allOpenOrders) for any
+        residual non-algo orders, plus
+      * the new algo endpoint (DELETE /fapi/v1/algoOpenOrders) which is
+        where STOP_MARKET / TAKE_PROFIT_MARKET / TRAILING_STOP_MARKET have
+        lived since the 2025-12-09 migration.
+
+    Without the algo path, the legacy bulk silently succeeds while leaving
+    every SL/TP intact — the symptom we kept seeing as orphan SL/TP stacks.
+
+    Falls back to per-order cancel when keep_ids or only_stop forbid bulk,
+    routing each id to the correct endpoint by bucket.
     """
     use_bulk = not keep_ids and not only_stop
     if use_bulk:
         try:
             ex.cancel_all_orders(symbol)
             log.info("cancel_all_orders OK on %s", symbol)
-            # Don't return yet: confirm with a fetch; if any conditional
-            # remains (e.g. TP/SL in a separate bucket on some accounts),
-            # fall through to per-order cleanup.
         except Exception as exc:  # noqa: BLE001
             log.warning("cancel_all_orders %s failed, falling back: %s",
                         symbol, exc)
+        # The new algo bucket is independent of the call above; always hit
+        # it too. A failure here is not fatal — the per-id sweep below acts
+        # as the second line of defence.
+        _cancel_algo_open_orders(ex, symbol)
 
-    open_orders = _fetch_open_orders_with_retry(ex, symbol)
-    if open_orders is None:
-        # Couldn't enumerate. Bulk was already attempted at the top when
-        # use_bulk was True. With keep_ids/only_stop we MUST NOT bulk-
-        # cancel here — that would nuke the very orders we wanted to keep.
-        # Return -1 so the caller knows cleanup status is unknown.
-        return -1
+    # Verification fetch from BOTH buckets so per-id cleanup catches
+    # whatever survived the bulk passes (or whatever the bulk skipped
+    # because keep_ids / only_stop disallowed it).
+    legacy_orders = _fetch_open_orders_with_retry(ex, symbol)
+    algo_orders = _fetch_algo_open_orders(ex, symbol)
+    if legacy_orders is None:
+        # Couldn't enumerate the legacy bucket. Bulk was already attempted
+        # at the top when use_bulk was True. With keep_ids/only_stop we
+        # MUST NOT bulk-cancel here — that would nuke the orders we wanted
+        # to keep. Continue with whatever algo info we have; report -1 if
+        # algo also empty so the caller knows status is unknown.
+        legacy_orders = []
+        if not algo_orders:
+            return -1
 
     cancelled = 0
-    for o in open_orders:
+
+    # Legacy (regular) order book — typically empty for conditionals after
+    # 2025-12-09 but may still hold compatibility-shimmed entries.
+    for o in legacy_orders:
         oid = str(o.get("id") or "")
         if not oid or oid in keep_ids:
             continue
-        if not _is_reduce_only(o):
-            continue
-        if not _is_conditional(o):
+        if not _is_reduce_only(o) or not _is_conditional(o):
             continue
         if only_stop:
             info = o.get("info") or {}
@@ -123,6 +252,24 @@ def cancel_symbol_conditionals(
             cancelled += 1
         except Exception as exc:  # noqa: BLE001
             log.warning("cancel_order %s on %s failed: %s", oid, symbol, exc)
+
+    # Algo bucket — where the bulk of orphan SL/TP actually lives now.
+    for o in algo_orders:
+        aid = _algo_id(o)
+        if not aid or aid in keep_ids:
+            continue
+        info = o.get("info") if isinstance(o.get("info"), dict) else o
+        otype = str(info.get("type") or o.get("type") or "").upper()
+        if not any(tag in otype for tag in ("STOP", "TAKE_PROFIT", "TRAILING_STOP")):
+            continue
+        if only_stop and "TAKE_PROFIT" in otype:
+            continue
+        # Algo orders are reduce-only by construction in our code path; we
+        # don't gate on the flag here because Binance's response shape
+        # does not consistently expose it.
+        if _cancel_algo_order(ex, symbol, aid):
+            cancelled += 1
+
     if cancelled:
         log.info("cancelled %d conditional order(s) on %s", cancelled, symbol)
     return cancelled

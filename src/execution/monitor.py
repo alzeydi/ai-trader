@@ -15,7 +15,11 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from src.config import settings
-from src.execution.orders import OrderExecutor, cancel_symbol_conditionals
+from src.execution.orders import (
+    OrderExecutor,
+    _fetch_algo_open_orders,
+    cancel_symbol_conditionals,
+)
 from src.persistence.db import (
     SessionFactory,
     Trade,
@@ -157,12 +161,15 @@ class PositionMonitor:
         if self.client is None:
             return
         ex = self.client.exchange
+        symbols_with_orders: set[str] = set()
+
+        # Legacy bucket (compat-shimmed conditionals, plain reduce-only
+        # market orders left behind, etc.)
         try:
             open_orders = ex.fetch_open_orders()
         except Exception as exc:  # noqa: BLE001
             log.debug("reconcile: fetch_open_orders (all) failed: %s", exc)
-            return
-        symbols_with_orders: set[str] = set()
+            open_orders = []
         for o in open_orders:
             sym = o.get("symbol")
             if not sym:
@@ -170,6 +177,27 @@ class PositionMonitor:
             otype = (o.get("type") or (o.get("info") or {}).get("type") or "").upper()
             if any(tag in otype for tag in ("STOP", "TAKE_PROFIT", "TRAILING_STOP")):
                 symbols_with_orders.add(str(sym))
+
+        # New algo bucket — the actual home of conditional orders since the
+        # 2025-12-09 Binance migration. Without this pass the reconciler
+        # was effectively a no-op for conditional cleanup.
+        markets_by_id = getattr(ex, "markets_by_id", {}) or {}
+        for o in _fetch_algo_open_orders(ex):
+            info = o.get("info") if isinstance(o.get("info"), dict) else o
+            raw_sym = o.get("symbol") or info.get("symbol") or ""
+            if not raw_sym:
+                continue
+            # The algo endpoint returns Binance-native ids ("ZECUSDT");
+            # convert to the unified ccxt symbol ("ZEC/USDT:USDT") so it
+            # matches DB rows and `cancel_symbol_conditionals` calls.
+            unified = raw_sym
+            mkt = markets_by_id.get(raw_sym)
+            if isinstance(mkt, list) and mkt:
+                mkt = mkt[0]
+            if isinstance(mkt, dict) and mkt.get("symbol"):
+                unified = mkt["symbol"]
+            symbols_with_orders.add(str(unified))
+
         if not symbols_with_orders:
             return
 
