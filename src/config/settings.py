@@ -125,6 +125,18 @@ class Settings(BaseSettings):
     signal_min_confidence: float = 0.6
     invalidation_check_interval_min: int = 15
 
+    # ----- Liquidity filter -----
+    # Per-cycle screen that drops thin pairs from `symbols.yaml` before the
+    # signal engine sees them. Was added after a STX/USDT close slipped 8
+    # ticks past the SL (~$5 PnL error) — root cause was a thin book at
+    # the trigger level, not the bot logic.
+    min_quote_volume_24h_usdt: float = 50_000_000.0
+    max_spread_bps: float = 5.0
+    # `fetch_tickers()` is one REST call for all symbols on Binance, so
+    # per-cycle (60s) refresh is cheap. Cache adds robustness if the
+    # ticker call transiently fails.
+    liquidity_filter_cache_sec: int = 300
+
     # ----- Persistence -----
     db_path: str = "data/trades.db"
     equity_csv: str = "data/equity_curve.csv"
