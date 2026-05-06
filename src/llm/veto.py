@@ -111,6 +111,19 @@ def preflight_check(
             return "funding_long_overheated"
         if candidate.side == "short" and funding < -FUNDING_OVERHEATED_PCT:
             return "funding_short_oversold"
+        # Type B = counter-trend fade. The whole edge of the setup is that
+        # the crowd is on the other side: positive funding (longs paying
+        # shorts) for B SHORT, negative funding for B LONG. With neutral
+        # or wrong-sign funding there's no tailwind — we're just shorting
+        # an uptrend / longing a downtrend. Skip when funding is missing
+        # the expected sign. (Endpoint reference: Binance USDⓈ-M Futures
+        # premiumIndex / fundingRate — values returned in fraction, then
+        # rendered as percent in user.j2.)
+        if candidate.entry_type == "B":
+            if candidate.side == "short" and funding <= 0.0:
+                return "type_b_short_no_funding_tailwind"
+            if candidate.side == "long" and funding >= 0.0:
+                return "type_b_long_no_funding_tailwind"
     if (
         candidate.side == "long"
         and context.liq_long is not None

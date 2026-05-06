@@ -189,6 +189,10 @@ class SignalEngine:
         # ════════════════════════════════════════════════════════════════════
         hist_delta_15 = float(hist_15.iloc[-1]) - float(hist_15.iloc[-2])
         b_block = float(settings.b_trend_block_pct)
+        b_htf = float(settings.b_htf_extension_pct)
+        # HTF extension vs 4h-EMA200. >0 means price is above the 200ema
+        # (uptrend territory); <0 means below (downtrend territory).
+        htf_ext = (close_4h - float(ema200_4h)) / float(ema200_4h) if float(ema200_4h) > 0 else 0.0
 
         if float(rsi_4h) > 75 and rsi_down:
             # Refuse to short into a 1h that has been climbing — the most
@@ -198,6 +202,15 @@ class SignalEngine:
                     "%s: Type B SHORT blocked by 1h trend gate "
                     "(slope=%.2f%% > %.2f%%)",
                     symbol, ema50_1h_slope_pct * 100, b_block * 100,
+                )
+            elif htf_ext > b_htf:
+                # 4h close is well above 4h-EMA200 — this is a mid-trend
+                # pump, not an exhaustion top. Fading it is the canonical
+                # losing trade (BNB/USDT 2026-05-06 case study).
+                log.info(
+                    "%s: Type B SHORT blocked by 4h HTF gate "
+                    "(close %.2f%% above 4h-EMA200 > %.2f%%)",
+                    symbol, htf_ext * 100, b_htf * 100,
                 )
             else:
                 strength = _score_b(float(rsi_4h), "short", hist_delta_15)
@@ -217,6 +230,14 @@ class SignalEngine:
                     "%s: Type B LONG blocked by 1h trend gate "
                     "(slope=%.2f%% < -%.2f%%)",
                     symbol, ema50_1h_slope_pct * 100, b_block * 100,
+                )
+            elif htf_ext < -b_htf:
+                # Symmetric: 4h close well below 4h-EMA200 → mid-downtrend,
+                # not an exhaustion bottom. Don't fade.
+                log.info(
+                    "%s: Type B LONG blocked by 4h HTF gate "
+                    "(close %.2f%% below 4h-EMA200 < -%.2f%%)",
+                    symbol, htf_ext * 100, b_htf * 100,
                 )
             else:
                 strength = _score_b(float(rsi_4h), "long", hist_delta_15)
