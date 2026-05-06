@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     # ----- Runtime -----
     log_level: str = "INFO"
     loop_interval_sec: int = 60
-    monitor_interval_sec: int = 60
+    monitor_interval_sec: int = 15
     dry_run: bool = True
     paper_trading: bool = True
 
