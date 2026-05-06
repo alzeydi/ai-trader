@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from src.config import settings
-from src.execution.orders import OrderExecutor
+from src.execution.orders import OrderExecutor, cancel_symbol_conditionals
 from src.persistence.db import (
     SessionFactory,
     Trade,
@@ -131,7 +131,44 @@ class PositionMonitor:
                 continue
             self._close_and_record(trade, reason)
             closed_symbols.append(trade.symbol)
+        # Belt-and-suspenders: anything still hanging on the book for a
+        # symbol with no live position is, by definition, an orphan from
+        # an earlier close whose sweep failed (or a trail tick that
+        # placed a new SL but couldn't cancel the old one). Wipe them.
+        try:
+            self._reconcile_orphan_orders()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("monitor: reconcile failed: %s", exc)
         return closed_symbols
+
+    def _reconcile_orphan_orders(self) -> None:
+        """Cancel every conditional order on symbols that have no position."""
+        if self.client is None:
+            return
+        ex = self.client.exchange
+        try:
+            open_orders = ex.fetch_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("reconcile: fetch_open_orders (all) failed: %s", exc)
+            return
+        symbols_with_orders: set[str] = set()
+        for o in open_orders:
+            sym = o.get("symbol")
+            if not sym:
+                continue
+            otype = (o.get("type") or (o.get("info") or {}).get("type") or "").upper()
+            if any(tag in otype for tag in ("STOP", "TAKE_PROFIT", "TRAILING_STOP")):
+                symbols_with_orders.add(str(sym))
+        if not symbols_with_orders:
+            return
+        live_symbols = {
+            s.symbol for s in fetch_open_positions(self.client) if s.quantity > 0
+        }
+        orphan_symbols = symbols_with_orders - live_symbols
+        for sym in orphan_symbols:
+            n = cancel_symbol_conditionals(ex, sym)
+            if n:
+                log.info("reconcile: %s had no position, wiped %s order(s)", sym, n)
 
     # ------------------------------------------------------------------
     def _update_trail(self, trade: Trade) -> None:

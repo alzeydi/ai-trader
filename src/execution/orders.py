@@ -9,6 +9,7 @@ the bracket (entry market + reduce-only stop + reduce-only take-profit).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,109 @@ if TYPE_CHECKING:
     from src.data.binance_client import BinanceClient
 
 log = logging.getLogger(__name__)
+
+
+def _is_reduce_only(o: dict[str, Any]) -> bool:
+    info = o.get("info") or {}
+    if o.get("reduceOnly") is True or info.get("reduceOnly") in (True, "true"):
+        return True
+    # Binance fapi sometimes only fills `closePosition` or carries the flag
+    # under `ro`; treat anything that can only reduce a position as such.
+    if info.get("closePosition") in (True, "true"):
+        return True
+    return False
+
+
+def _is_conditional(o: dict[str, Any]) -> bool:
+    info = o.get("info") or {}
+    otype = (o.get("type") or info.get("type") or "").upper()
+    return any(
+        tag in otype
+        for tag in ("STOP", "TAKE_PROFIT", "TRAILING_STOP")
+    )
+
+
+def _fetch_open_orders_with_retry(ex, symbol: str, attempts: int = 3) -> list[dict[str, Any]] | None:
+    """Returns None on terminal failure (caller should NOT proceed assuming clean state)."""
+    last_exc: Exception | None = None
+    delay = 0.5
+    for i in range(attempts):
+        try:
+            return ex.fetch_open_orders(symbol)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            time.sleep(delay)
+            delay *= 2
+    log.warning("fetch_open_orders %s failed after %d attempts: %s",
+                symbol, attempts, last_exc)
+    return None
+
+
+def cancel_symbol_conditionals(
+    ex,
+    symbol: str,
+    *,
+    keep_ids: tuple[str, ...] = (),
+    only_stop: bool = False,
+) -> int:
+    """Cancel every reduce-only conditional order on `symbol`.
+
+    Returns the count cancelled. `keep_ids` are skipped (e.g. the freshly
+    placed SL during a trail tick). With `only_stop=True`, leaves
+    TAKE_PROFIT orders alone — used by trailing-stop replacement.
+
+    First tries Binance's bulk `cancel_all_orders`, which atomically wipes
+    everything on the symbol — this is the only reliable way to guarantee
+    no ghosts when individual cancels race against a fill or fetch fails.
+    Falls back to per-order cancel only when bulk path can't be used
+    (orders to keep, only_stop filter, or method missing).
+    """
+    use_bulk = not keep_ids and not only_stop
+    if use_bulk:
+        try:
+            ex.cancel_all_orders(symbol)
+            log.info("cancel_all_orders OK on %s", symbol)
+            # Don't return yet: confirm with a fetch; if any conditional
+            # remains (e.g. TP/SL in a separate bucket on some accounts),
+            # fall through to per-order cleanup.
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cancel_all_orders %s failed, falling back: %s",
+                        symbol, exc)
+
+    open_orders = _fetch_open_orders_with_retry(ex, symbol)
+    if open_orders is None:
+        # Couldn't enumerate — last-resort bulk again, ignoring failure.
+        if not use_bulk:
+            try:
+                ex.cancel_all_orders(symbol)
+                log.info("cancel_all_orders fallback OK on %s", symbol)
+                return -1
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cancel_all_orders fallback %s failed: %s", symbol, exc)
+        return -1
+
+    cancelled = 0
+    for o in open_orders:
+        oid = str(o.get("id") or "")
+        if not oid or oid in keep_ids:
+            continue
+        if not _is_reduce_only(o):
+            continue
+        if not _is_conditional(o):
+            continue
+        if only_stop:
+            info = o.get("info") or {}
+            otype = (o.get("type") or info.get("type") or "").upper()
+            if "TAKE_PROFIT" in otype:
+                continue
+        try:
+            ex.cancel_order(oid, symbol)
+            cancelled += 1
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cancel_order %s on %s failed: %s", oid, symbol, exc)
+    if cancelled:
+        log.info("cancelled %d conditional order(s) on %s", cancelled, symbol)
+    return cancelled
 
 
 @dataclass
@@ -138,31 +242,9 @@ class OrderExecutor:
 
         # Pre-open sweep: idempotency already ensured no DB row is open for
         # this symbol, so any reduce-only order still on the book is an
-        # orphan from a prior position whose close path failed to clean up
-        # (close_live sweep can lose to a flaky fetch_open_orders, or the
-        # trader cycle can re-enter before the monitor closes the previous
-        # row). Cancelling them now prevents a stale SL/TP from binding to
-        # the brand-new position we're about to open.
-        try:
-            stale = ex.fetch_open_orders(order.symbol)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("pre-open sweep: fetch_open_orders %s failed: %s",
-                        order.symbol, exc)
-            stale = []
-        for o in stale:
-            info = o.get("info") or {}
-            if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
-                continue
-            oid = str(o.get("id") or "")
-            if not oid:
-                continue
-            try:
-                ex.cancel_order(oid, order.symbol)
-                log.info("pre-open sweep: cancelled orphan %s on %s",
-                         oid, order.symbol)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("pre-open sweep: cancel %s on %s failed: %s",
-                            oid, order.symbol, exc)
+        # orphan from a prior position. Wipe everything via bulk cancel so
+        # a brand-new position can't inherit a stale SL/TP.
+        cancel_symbol_conditionals(ex, order.symbol)
 
         # Pre-flight margin check: sizing already caps notional by free
         # margin, but the wallet can have moved (other open positions, fees)
@@ -376,30 +458,11 @@ class OrderExecutor:
                 except Exception as exc:  # noqa: BLE001
                     log.warning("cancel_order %s failed: %s", oid, exc)
 
-        # Sweep any leftover reduce-only orders. Catches:
-        #   * the previous SL when `replace_stop` placed a new one but failed
-        #     to cancel the old one,
-        #   * unrelated brackets placed manually before adoption,
-        #   * any order whose ID was lost because the row was wiped.
-        # Without this sweep these orders linger forever (and re-trigger if
-        # a future position re-opens on the same symbol).
-        try:
-            leftovers = ex.fetch_open_orders(symbol)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("close sweep: fetch_open_orders %s failed: %s", symbol, exc)
-            leftovers = []
-        for o in leftovers:
-            info = o.get("info") or {}
-            if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
-                continue
-            oid = str(o.get("id") or "")
-            if not oid:
-                continue
-            try:
-                ex.cancel_order(oid, symbol)
-                log.info("close sweep: cancelled leftover order %s on %s", oid, symbol)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("close sweep: cancel %s failed: %s", oid, exc)
+        # Wipe every conditional order on the symbol. Bulk cancel is atomic
+        # and survives transient fetch failures, so ghosts can't accumulate
+        # across closes (the previous per-id sweep silently no-op'd whenever
+        # fetch_open_orders failed, leaving stacks of stale SLs behind).
+        cancel_symbol_conditionals(ex, symbol)
 
         if reason == "sl_or_tp_hit":
             # SL/TP path is finished — nothing else to do; PnL is recorded below.
@@ -485,51 +548,12 @@ class OrderExecutor:
                 log.warning("replace_stop: new SL placement failed for %s: %s", symbol, exc)
                 return False
             new_oid = str(resp.get("id") or "")
-            # Sweep ALL other reduce-only STOP_MARKET orders for this symbol
-            # instead of cancelling only `old_oid`. On demo-fapi (and
-            # occasionally on prod) targeted cancel_order silently fails or
-            # returns "Unknown order"; once the DB pointer is overwritten
-            # those orphans become unreachable and stack on the exchange,
-            # so each trail tick previously left a fresh ghost SL behind.
-            try:
-                open_orders = ex.fetch_open_orders(symbol)
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "replace_stop: fetch_open_orders %s failed, falling back to "
-                    "targeted cancel of %s: %s", symbol, old_oid, exc,
-                )
-                open_orders = []
-                if old_oid:
-                    try:
-                        ex.cancel_order(old_oid, symbol)
-                    except Exception as inner:  # noqa: BLE001
-                        log.warning(
-                            "replace_stop: targeted cancel of %s on %s also "
-                            "failed: %s", old_oid, symbol, inner,
-                        )
-            for o in open_orders:
-                info = o.get("info") or {}
-                oid = str(o.get("id") or "")
-                if not oid or oid == new_oid:
-                    continue
-                if not (o.get("reduceOnly") or info.get("reduceOnly") in (True, "true")):
-                    continue
-                otype = (o.get("type") or info.get("type") or "").upper()
-                # Only sweep STOP-class orders. Leave TAKE_PROFIT_MARKET alone:
-                # it's the same trade's TP and cancelling it would leave the
-                # position with no upside target until close.
-                if "STOP" not in otype or "TAKE_PROFIT" in otype:
-                    continue
-                try:
-                    ex.cancel_order(oid, symbol)
-                    log.info(
-                        "replace_stop: swept stale SL %s on %s", oid, symbol,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    log.warning(
-                        "replace_stop: sweep cancel %s on %s failed: %s",
-                        oid, symbol, exc,
-                    )
+            # Sweep every other STOP-class reduce-only order, keeping the
+            # freshly placed one and leaving TP_MARKET alone. Targeted
+            # cancel of `old_oid` is unreliable on demo-fapi.
+            cancel_symbol_conditionals(
+                ex, symbol, keep_ids=(new_oid,), only_stop=True
+            )
             new_stop = new_stop_priced
 
         with self.session_factory() as s:
