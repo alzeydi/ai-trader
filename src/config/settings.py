@@ -74,15 +74,23 @@ class Settings(BaseSettings):
     # spread/noise — anything tighter gets stopped out by random ticks.
     min_stop_pct: float = 0.008  # 0.8 %
     trail_enabled: bool = True
-    # USD-denominated breakeven trailing. When unrealized NET profit (after
-    # round-trip taker fees) reaches breakeven_activate_usd, the stop is
-    # moved to lock in at least breakeven_lock_usd of NET profit. After
-    # that the stop continues to follow the high-water profit, never
-    # giving back more than trail_distance_usd, and never loosening below
-    # the locked-in floor.
-    breakeven_activate_usd: float = 5.0
-    breakeven_lock_usd: float = 2.5
-    trail_distance_usd: float = 2.5
+    # Notional-percent breakeven trailing. Thresholds are expressed as a
+    # fraction of entry notional (qty × entry), so they self-scale across
+    # equity, leverage and per-trade margin without re-tuning.
+    #
+    # Lifecycle:
+    #   1) When unrealised NET profit (after round-trip taker fees) reaches
+    #      `breakeven_activate_pct` of notional, the SL is moved to lock in
+    #      at least `breakeven_lock_pct` of notional in NET profit.
+    #   2) After arming, the SL follows the high-water profit, never giving
+    #      back more than `trail_distance_pct` of notional, and never
+    #      loosening below the locked-in floor.
+    #
+    # Defaults sized for the existing universe (~1 % round-trip slippage
+    # budget) — bump higher for chop, lower for trending alts.
+    breakeven_activate_pct: float = 0.010   # 1.0 % of notional
+    breakeven_lock_pct: float = 0.0075      # 0.75 % of notional
+    trail_distance_pct: float = 0.009       # 0.9 % of notional
     # ----- Type B counter-trend gates -----
     # Type B fires on extreme 4h RSI + 15m reversal. Without a 1h trend
     # filter it keeps fading every minor pullback on a strongly trending
