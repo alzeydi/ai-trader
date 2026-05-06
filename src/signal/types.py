@@ -14,7 +14,7 @@ class CandidateSignal(BaseModel):
     )
     symbol: str
     side: Literal["long", "short"]
-    entry_type: Literal["A", "B", "C"]
+    entry_type: Literal["A", "B", "C", "D"]
     signal_strength: float = Field(ge=0.0, le=1.0)
     entry_price_ref: float
     atr_14: float
