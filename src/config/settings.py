@@ -101,8 +101,18 @@ class Settings(BaseSettings):
     # is genuinely likely); the veto layer decides «is there a catalyst»
     # using funding / OI / liquidations, which actually distinguish
     # news-driven moves from clean blowoffs.
-    b_trend_block_pct: float = 0.10      # 10 % drift across the window
+    # Tightened from 10 % → 5 % after the BNB/USDT case (2026-05-06):
+    # B SHORT fired on a sustained alt pump where 12 h-1h-EMA50 drift was
+    # ~3-4 % — well under the 10 % gate but still firmly in the trend.
+    # 5 % keeps the gate permissive enough for genuine ranges while
+    # excluding mid-pump fades.
+    b_trend_block_pct: float = 0.05
     b_trend_lookback_bars: int = 12      # 12 hours of 1h closes
+    # HTF gate for Type B: don't fade mid-trend. Block B SHORT when 4h
+    # close is more than `b_htf_extension_pct` ABOVE 4h-EMA200, and B
+    # LONG when 4h close is more than that BELOW. Catches sustained
+    # multi-day moves that the 12 h-1h-slope window cannot see.
+    b_htf_extension_pct: float = 0.05
     # After a losing Type-B trade closes on a symbol, suppress new Type-B
     # entries on that symbol for this many hours. One bad fade is usually a
     # regime signal; let the bot stop re-arming it against the same coin.
