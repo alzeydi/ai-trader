@@ -77,6 +77,19 @@ class Settings(BaseSettings):
     breakeven_activate_usd: float = 5.0
     breakeven_lock_usd: float = 2.5
     trail_distance_usd: float = 2.5
+    # ----- Type B counter-trend gates -----
+    # Type B fires on extreme 4h RSI + 15m reversal. Without a 1h trend
+    # filter it keeps fading every minor pullback on a strongly trending
+    # coin (see ZEC short-B series 2026-05-05/06: 18 trades, −154 USD,
+    # against a +32 % 36-hour uptrend). Block B when EMA50(1h) has drifted
+    # against the trade direction by more than `b_trend_block_pct` over
+    # the last `b_trend_lookback_bars` hours.
+    b_trend_block_pct: float = 0.02      # 2 % drift across the window
+    b_trend_lookback_bars: int = 12      # 12 hours of 1h closes
+    # After a losing Type-B trade closes on a symbol, suppress new Type-B
+    # entries on that symbol for this many hours. One bad fade is usually a
+    # regime signal; let the bot stop re-arming it against the same coin.
+    b_loss_cooldown_hours: int = 6
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
     # Binance USDT-M futures rejects any non-reduce-only order whose notional
