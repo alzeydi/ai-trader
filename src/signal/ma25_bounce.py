@@ -2,13 +2,17 @@
 
 Pure function — no I/O, no side-effects, no mutable state.
 
-Run right after each H4 close (UTC :00 multiples of 4). Only pass CLOSED
-bars; drop the in-progress candle before calling.
+IMPORTANT: this detector USES the in-progress H4 bar. The LAST element of
+candles_4h MUST be the currently-forming bar — do not strip it. Conditions
+are deliberately re-evaluated against the live bar so a setup can be entered
+as soon as it looks confirmed, instead of waiting up to 4 hours for bar
+close. The trade-off (bar may reverse before close) is absorbed by the host
+bot's stop-loss; per-symbol 24h cooldown handles intra-bar dedup.
 
 Three-filter pipeline:
-  1. Trend filter  — MA25 rising + MA25 > MA99
-  2. Prior context — price was already above MA25 before the bounce
-  3. Bounce shape  — green close above MA25, touch zone, not too late
+  1. Trend filter  — MA25 rising + MA25 > MA99 (both include live bar)
+  2. Prior context — 10 CLOSED bars before live were mostly above MA25
+  3. Bounce shape  — green so-far close above MA25, touch zone, not too late
 
 All tunable thresholds live in src/config/settings.py under the
 "MA25 Bounce" section. Do NOT hardcode replacements here.
@@ -49,7 +53,9 @@ def detect_ma25_bounce(
     symbol:
         Ticker string used only for log messages.
     candles_4h:
-        ≥101 most-recent 4-hour CLOSED candles, ascending by time.
+        ≥101 most-recent 4-hour candles, ascending by time. The LAST
+        element must be the currently-forming (in-progress) bar — its
+        running close/low feed the bounce checks.
         Required columns: open, high, low, close (quote_volume optional).
     """
     if len(candles_4h) < _MIN_CANDLES:
@@ -105,7 +111,7 @@ def detect_ma25_bounce(
         )
         return None
 
-    # B. Current bar must be green (close > open — wicks alone do not count).
+    # B. Current bar must be green so far (running close > open).
     if last_close <= last_open:
         log.debug(
             "%s: ma25_bounce FAIL not green: close=%.5f open=%.5f",
@@ -113,7 +119,7 @@ def detect_ma25_bounce(
         )
         return None
 
-    # C. Current bar closed above MA25.
+    # C. Current bar's running close is above MA25.
     if last_close <= ma25_now:
         log.debug(
             "%s: ma25_bounce FAIL close below MA25: close=%.5f MA25=%.5f",

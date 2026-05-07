@@ -253,29 +253,29 @@ def test_prior_above_exactly_07_passes() -> None:
 def _make_engine_dfs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (df_4h, df_1h, df_15m) suitable for SignalEngine._evaluate.
 
-    df_4h:  301 bars — 300 closed + 1 in-progress (stripped by engine).
-            Bounce pattern at the SECOND-TO-LAST closed bar so that after
-            engine.py strips df_4h.iloc[-1] the signal bar is iloc[-1].
+    df_4h:  301 bars. The LAST bar (iloc[-1]) is the in-progress bar and
+            is now USED by the detector (spec §1) — no stripping.
+            The bounce pattern is placed so that iloc[-1] is the live entry
+            bar (green, close > MA25), with the touch in the last 3 bars.
     df_1h:  100 bars, flat (near-EMA50) — prevents A/D/B/C from firing.
     df_15m: 200 bars with neutral RSI — prevents A/B/C from firing.
     """
     # --- df_4h: rising 90→120, bounce at end (301 bars total) ---
-    # Row [-1] is the current open (in-progress) candle; engine strips it.
-    # Rows [-2] is the signal bar (entry bar), [-3]/[-4] are the bounce bars.
+    # Row [-1] is the live in-progress bar AND the signal bar.
+    # Rows [-2]/[-3] are recent closed bars; [-3] carries the touch wick.
     n4 = 301
     base4 = np.linspace(90.0, 120.0, n4)
     closes4 = base4.copy()
-    ma25_est = float(np.mean(closes4[-26:-1]))  # MA25 of closed bars
-    closes4[-4] = ma25_est * 1.010
+    ma25_est = float(np.mean(closes4[-25:]))  # MA25 includes live bar
     closes4[-3] = ma25_est * 1.008
-    closes4[-2] = ma25_est * 1.020   # entry bar (closed)
-    closes4[-1] = ma25_est * 1.021   # in-progress candle — stripped by engine
+    closes4[-2] = ma25_est * 1.010
+    closes4[-1] = ma25_est * 1.020   # live entry bar (running close)
     opens4 = closes4.copy()
-    opens4[-2] = closes4[-2] * 0.997   # entry bar is green
+    opens4[-1] = closes4[-1] * 0.997   # live bar is green so far
     highs4 = closes4 * 1.002
     lows4  = closes4 * 0.998
-    actual_ma25 = float(np.mean(closes4[-26:-1]))
-    lows4[-3] = actual_ma25 * 1.002   # touch zone in bar before entry
+    actual_ma25 = float(np.mean(closes4[-25:]))
+    lows4[-3] = actual_ma25 * 1.002   # touch zone within last 3 bars
     idx4 = pd.date_range("2024-01-01", periods=n4, freq="4h", tz="UTC")
     df_4h = pd.DataFrame(
         {"open": opens4, "high": highs4, "low": lows4,
