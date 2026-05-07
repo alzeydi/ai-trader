@@ -213,11 +213,17 @@ class Settings(BaseSettings):
     # BTC is rising. Runs BEFORE the LLM call so vetoed candidates don't burn
     # tokens. Applies uniformly to all entry types (A/B/C/D/E).
     btc_regime_enabled: bool = True
-    # Move (in %) over the last 1h close required to declare up/down. Below
-    # this, regime is "flat" and both sides are allowed. 0.3 % chosen over
-    # the 0.1 % used for LLM context to avoid flapping the gate every hour
-    # on noise — at 0.1 % a typical 1h bar oscillates the verdict 2-3x/h.
-    btc_regime_threshold_pct: float = 0.3
+    # EMA-on-H1 slope filter. Replaces the previous "1h close vs prev close"
+    # comparison, which only saw the LAST hour's delta and would read flat
+    # while a multi-hour trend was in progress (e.g. last bar already at the
+    # bottom of a multi-bar dump → small Δ vs prev → "flat").
+    #
+    # Logic: ema = EMA(period, H1_closes); slope_pct = (ema_now − ema_lookback_ago)
+    # / ema_lookback_ago × 100. up if slope > +threshold, down if < −threshold,
+    # else flat.
+    btc_regime_ema_period: int = 50          # H1 bars; EMA50 = standard trend filter
+    btc_regime_slope_lookback: int = 6       # H1 bars; "EMA50 changed X% over 6h"
+    btc_regime_slope_threshold_pct: float = 0.15  # 0.15 % over 6h ≈ 0.025 %/bar
 
     # ----- Signal engine -----
     timeframe_trend: str = "4h"

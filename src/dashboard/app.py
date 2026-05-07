@@ -218,58 +218,33 @@ def load_btc_reference(start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
 # Pages
 # ---------------------------------------------------------------------------
 
-@st.cache_data(ttl=60)
-def load_btc_regime_snapshot() -> dict | None:
-    """Snapshot of the current BTC 1h regime as the bot sees it.
-
-    Returns dict {regime, delta_pct, last, prev, threshold_pct} or None on
-    fetch failure. Cached for 60 s — matches the trader-side gate cache.
-    """
-    try:
-        from src.data.binance_client import BinanceClient
-
-        client = BinanceClient()
-        df = client.fetch_ohlcv("BTC/USDT:USDT", "1h", limit=3)
-    except Exception:
-        return None
-    if df is None or df.empty or len(df) < 2:
-        return None
-    last = float(df["close"].iloc[-1])
-    prev = float(df["close"].iloc[-2])
-    if prev <= 0:
-        return None
-    delta_pct = (last - prev) / prev * 100.0
-    threshold = float(settings.btc_regime_threshold_pct)
-    if delta_pct > threshold:
-        regime = "up"
-    elif delta_pct < -threshold:
-        regime = "down"
-    else:
-        regime = "flat"
-    return {
-        "regime": regime,
-        "delta_pct": delta_pct,
-        "last": last,
-        "prev": prev,
-        "threshold_pct": threshold,
-    }
-
-
 def _render_btc_regime_banner() -> None:
     """Top-of-page banner showing current BTC regime + which sides the gate
-    blocks. Mirrors the live gate in src/risk/btc_regime.py."""
+    blocks. Calls the same `get_btc_regime_snapshot` the trader uses, so
+    dashboard and gate are guaranteed in sync (modulo separate process-level
+    caches with the same 60 s TTL)."""
     if not settings.btc_regime_enabled:
         st.caption("BTC regime gate: disabled (BTC_REGIME_ENABLED=false)")
         return
 
-    snap = load_btc_regime_snapshot()
+    try:
+        from src.data.binance_client import BinanceClient
+        from src.risk.btc_regime import get_btc_regime_snapshot
+
+        snap = get_btc_regime_snapshot(BinanceClient())
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"BTC regime: fetch error ({exc}) — gate fails open")
+        return
+
     if snap is None:
         st.warning("BTC regime: fetch failed (gate fails open — nothing blocked)")
         return
 
     regime = snap["regime"]
-    delta = snap["delta_pct"]
+    slope = snap["slope_pct"]
     thr = snap["threshold_pct"]
+    period = snap["period"]
+    lookback = snap["lookback"]
 
     if regime == "up":
         allowed, blocked, color = "LONGS only", "shorts blocked", "🟢"
@@ -279,16 +254,20 @@ def _render_btc_regime_banner() -> None:
         allowed, blocked, color = "BOTH sides allowed", "—", "⚪"
 
     c1, c2, c3 = st.columns([1.2, 1.2, 2])
-    c1.metric(f"{color} BTC regime", regime.upper(), f"{delta:+.2f}% (1h)")
-    c2.metric("Threshold", f"±{thr:.2f}%")
+    c1.metric(
+        f"{color} BTC regime",
+        regime.upper(),
+        f"EMA{period} slope {slope:+.3f}% / {lookback}h",
+    )
+    c2.metric("Threshold", f"±{thr:.2f}% / {lookback}h")
     c3.metric("Gate verdict", allowed, blocked, delta_color="off")
     # Raw values the gate actually computed — useful when the chart says
-    # one thing and the banner another (cache staleness, Demo/Testnet data
-    # drift, ccxt returning a different bar than expected).
-    endpoint = "demo-fapi" if settings.binance_testnet else "fapi"
+    # one thing and the banner another (cache staleness, Demo data drift, etc.)
     st.caption(
-        f"diag: last={snap['last']:,.2f}  prev={snap['prev']:,.2f}  "
-        f"Δ={delta:+.3f}%  threshold=±{thr:.2f}%  endpoint={endpoint}"
+        f"diag: ema_now={snap['ema_now']:,.2f}  ema_{lookback}h_ago="
+        f"{snap['ema_past']:,.2f}  slope={slope:+.4f}%  "
+        f"threshold=±{thr:.2f}%  period={period}  lookback={lookback}h  "
+        f"endpoint={snap['endpoint']}"
     )
 
 
@@ -740,6 +719,15 @@ def main() -> None:
     page = st.sidebar.radio("Page", list(PAGES.keys()))
     if st.sidebar.button("Refresh data"):
         st.cache_data.clear()
+        # The BTC regime module has its own thread-locked cache (same 60 s
+        # TTL). Without this, Refresh would clear streamlit caches but the
+        # banner could still serve up to a minute of stale snapshot.
+        try:
+            from src.risk.btc_regime import reset_cache as _reset_btc_cache
+
+            _reset_btc_cache()
+        except Exception:  # noqa: BLE001
+            pass
     PAGES[page]()
 
 
