@@ -99,6 +99,30 @@ def test_paper_close_long_computes_positive_pnl():
     assert closed[0].close_price == pytest.approx(2050.0)
 
 
+def test_paper_close_populates_pnl_pct_and_fees():
+    """Close must persist pnl_pct (% price move) and round-trip fees.
+
+    Regression: prior to 2026-05-07 the close path only wrote `pnl_usd`,
+    leaving `pnl_pct` and `fees` at the column defaults (0). This broke
+    the dashboard's Sharpe (which reads `pnl_pct`) and the by-strategy
+    breakdown's avg-pnl-pct.
+    """
+    sf = make_session_factory()
+    fake_client = MagicMock()
+    fake_client.fetch_ticker.return_value = {"last": 2050.0}  # +2.5 % long move
+    executor = OrderExecutor(client=fake_client, paper=True, session_factory=sf)
+    executor.open_position(_order(side="long"))
+    result = executor.close_position("ETH/USDT:USDT", reason="manual")
+    assert result.success
+
+    closed = get_last_n_closed_trades(sf, 1)[0]
+    # Long 2000 → 2050 = +2.5 % gross (matches backtest's `gross/notional × 100`).
+    assert closed.pnl_pct == pytest.approx(2.5, rel=1e-6)
+    # Fees = qty × (entry + exit) × taker_pct, both legs.
+    expected_fees = 0.1 * (2000.0 + 2050.0) * 0.0004
+    assert closed.fees == pytest.approx(expected_fees, rel=1e-6)
+
+
 def test_paper_close_short_inverts_pnl_sign():
     sf = make_session_factory()
     fake_client = MagicMock()

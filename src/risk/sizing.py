@@ -85,7 +85,8 @@ def size_position(
         if candidate.entry_type == "C" and candidate.atr_14_1h is not None
         else candidate.atr_14
     )
-    sl_distance = atr * settings.atr_stop_multiplier
+    atr_sl_distance = atr * settings.atr_stop_multiplier
+    sl_distance = atr_sl_distance
 
     entry = candidate.entry_price_ref
     if entry <= 0 or sl_distance <= 0:
@@ -95,7 +96,8 @@ def size_position(
     # of price, which is well inside typical bid/ask noise. Force the stop
     # to clear at least `min_stop_pct` of the entry price.
     min_stop_distance = entry * settings.min_stop_pct
-    if sl_distance < min_stop_distance:
+    sl_floor_active = sl_distance < min_stop_distance
+    if sl_floor_active:
         sl_distance = min_stop_distance
 
     tp_distance = sl_distance * (settings.atr_take_multiplier / settings.atr_stop_multiplier)
@@ -176,8 +178,13 @@ def size_position(
 
     log.info(
         "%s %s sized: qty=%.6f notional=%.2f cap=%s "
-        "(uncapped_qty=%.6f, policy_max=%.2f, equity=%.2f)",
+        "sl_distance=%.6f sl_pct=%.3f%% sl_basis=%s atr=%.6f "
+        "(atr_sl=%.6f floor=%.6f, uncapped_qty=%.6f, policy_max=%.2f, equity=%.2f)",
         candidate.symbol, candidate.side, quantity, notional, last_cap,
+        sl_distance, sl_distance / entry * 100.0,
+        "min_stop_floor" if sl_floor_active else "atr",
+        atr,
+        atr_sl_distance, min_stop_distance,
         qty_uncapped, policy_max_notional, account.equity,
     )
 

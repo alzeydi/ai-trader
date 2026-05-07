@@ -291,6 +291,56 @@ def test_size_position_floor_does_not_block_normal_sized_trade():
     assert order is not None
 
 
+def test_size_position_emits_sl_diagnostic_log(caplog):
+    """The diagnostic log must include sl_distance, sl_pct, sl_basis, atr.
+
+    Regression-style test: without these fields we couldn't tell from
+    Railway logs whether a particular trade's SL came from the ATR×1.5
+    formula or the `min_stop_pct` floor (0.8 %). Lock the schema so the
+    dashboard / log scrapers can rely on it.
+    """
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    with caplog.at_level("INFO", logger="src.risk.sizing"):
+        order = size_position(cand, _account(equity=1000.0), _veto())
+    assert order is not None
+    msg = "\n".join(rec.getMessage() for rec in caplog.records)
+    assert "sized:" in msg
+    assert "sl_distance=" in msg
+    assert "sl_pct=" in msg
+    assert "sl_basis=" in msg
+    assert "atr=" in msg
+
+
+def test_size_position_sl_basis_atr_when_atr_exceeds_floor():
+    """High ATR → SL distance comes from ATR×1.5, not the 0.8 % floor."""
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    # atr_14=45 → atr_sl = 67.5 = 3.375 % of 2000 → above the 0.8 % floor.
+    order = size_position(cand, _account(equity=1000.0), _veto())
+    assert order is not None
+    sl_dist = cand.entry_price_ref - order.stop_loss
+    expected_atr_sl = cand.atr_14 * settings.atr_stop_multiplier
+    assert sl_dist == pytest.approx(expected_atr_sl, rel=1e-6)
+
+
+def test_size_position_sl_basis_floor_when_atr_below_floor():
+    """Low ATR → SL distance is the 0.8 % entry-pct floor."""
+    cand = CandidateSignal(
+        symbol="BTC/USDT:USDT",
+        side="long",
+        entry_type="A",
+        signal_strength=0.5,
+        entry_price_ref=100_000.0,
+        atr_14=1.0,  # raw atr_sl = 1.5 → 0.0015 % of price (way below floor)
+        swing_high_1h=101_000.0,
+        swing_low_1h=99_000.0,
+    )
+    order = size_position(cand, _account(), _veto())
+    assert order is not None
+    sl_dist = cand.entry_price_ref - order.stop_loss
+    expected_floor = cand.entry_price_ref * settings.min_stop_pct
+    assert sl_dist == pytest.approx(expected_floor, rel=1e-6)
+
+
 def test_size_position_floors_stop_at_min_stop_pct_on_low_vol():
     """ATR tiny relative to price → SL distance is floored at min_stop_pct of entry."""
     cand = CandidateSignal(

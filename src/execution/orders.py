@@ -362,10 +362,14 @@ class OrderExecutor:
                 + float(row.quantity) * float(close_price) * taker_pct
             )
             pnl = gross_pnl - fees
+            entry_notional = float(row.entry) * float(row.quantity)
+            pnl_pct = (gross_pnl / entry_notional * 100.0) if entry_notional > 0 else 0.0
             row.closed_at = datetime.now(tz=timezone.utc)
             row.close_price = close_price
             row.close_reason = reason
             row.pnl_usd = pnl
+            row.pnl_pct = pnl_pct
+            row.fees = fees
             s.commit()
             trade_id = row.id
 
@@ -697,6 +701,9 @@ class OrderExecutor:
 
         gross_pnl = self._compute_pnl(side=side, qty=qty, entry=entry_px, exit_=fill)
         pnl = gross_pnl - fee_entry - fee_exit
+        entry_notional = float(entry_px) * float(qty)
+        pnl_pct = (gross_pnl / entry_notional * 100.0) if entry_notional > 0 else 0.0
+        total_fees = float(fee_entry) + float(fee_exit)
 
         with self.session_factory() as s:
             row = s.execute(select(Trade).where(Trade.id == row_id)).scalar_one()
@@ -704,6 +711,8 @@ class OrderExecutor:
             row.close_price = fill
             row.close_reason = reason
             row.pnl_usd = pnl
+            row.pnl_pct = pnl_pct
+            row.fees = total_fees
             s.commit()
 
         log.info(
