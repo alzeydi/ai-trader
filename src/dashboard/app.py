@@ -282,6 +282,14 @@ def _render_btc_regime_banner() -> None:
     c1.metric(f"{color} BTC regime", regime.upper(), f"{delta:+.2f}% (1h)")
     c2.metric("Threshold", f"±{thr:.2f}%")
     c3.metric("Gate verdict", allowed, blocked, delta_color="off")
+    # Raw values the gate actually computed — useful when the chart says
+    # one thing and the banner another (cache staleness, Demo/Testnet data
+    # drift, ccxt returning a different bar than expected).
+    endpoint = "demo-fapi" if settings.binance_testnet else "fapi"
+    st.caption(
+        f"diag: last={snap['last']:,.2f}  prev={snap['prev']:,.2f}  "
+        f"Δ={delta:+.3f}%  threshold=±{thr:.2f}%  endpoint={endpoint}"
+    )
 
 
 def page_overview() -> None:
