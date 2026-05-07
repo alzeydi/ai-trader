@@ -383,6 +383,7 @@ class OrderExecutor:
             trade_id=trade_id,
             fill_price=close_price,
             pnl_usd=pnl,
+            fees_usd=fees,
             reason=reason,
         )
 
@@ -465,6 +466,15 @@ class OrderExecutor:
                 success=False, paper=False, reason=f"entry_rejected: {exc}"
             )
         entry_id = str(entry_resp.get("id") or "")
+
+        # Use the actual filled quantity from the exchange response. Binance
+        # applies LOT_SIZE / MARKET_LOT_SIZE step-size rounding server-side,
+        # so the filled qty may differ from order.quantity. Storing the
+        # exchange-reported filled qty ensures PnL accounting at close uses
+        # the same quantity as Binance's own realized-PnL calculation.
+        actual_qty = float(entry_resp.get("filled") or entry_resp.get("amount") or order.quantity)
+        if actual_qty <= 0:
+            actual_qty = order.quantity
 
         # Anchor SL/TP to the actual fill, not the stale candle reference.
         # Without this, a small adverse move between signal generation and
@@ -564,6 +574,7 @@ class OrderExecutor:
             entry_override=fill_price,
             stop_override=sl_price,
             take_override=tp_price,
+            qty_override=actual_qty,
         )
         return ExecutionResult(
             success=True,
@@ -735,6 +746,7 @@ class OrderExecutor:
             trade_id=row_id,
             fill_price=fill,
             pnl_usd=pnl,
+            fees_usd=total_fees,
             reason=reason,
         )
 
@@ -808,11 +820,13 @@ class OrderExecutor:
         entry_override: float | None = None,
         stop_override: float | None = None,
         take_override: float | None = None,
+        qty_override: float | None = None,
     ) -> int:
         with self.session_factory() as s:
             entry_val = entry_override if entry_override is not None else order.entry_price
             stop_val = stop_override if stop_override is not None else order.stop_loss
             tp_val = take_override if take_override is not None else order.take_profit
+            qty_val = qty_override if qty_override is not None else order.quantity
             row = Trade(
                 symbol=order.symbol,
                 side=order.side,
@@ -821,7 +835,7 @@ class OrderExecutor:
                 stop=stop_val,
                 original_stop=stop_val,
                 take_profit=tp_val,
-                quantity=order.quantity,
+                quantity=qty_val,
                 leverage=order.leverage,
                 risk_usd=order.risk_usd,
                 pnl_usd=0.0,
