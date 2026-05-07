@@ -7,17 +7,19 @@ Pages
 3. Trades       — table of all trades with filters
 4. AI Decisions — LLM decision log (with raw JSON) + cost-by-day chart
 5. Positions    — currently open positions (live)
-6. Settings     — read-only view of `.env` and PAPER_TRADING toggle
+6. Data Export  — download tables as CSV or a single zip bundle
+7. Settings     — read-only view of `.env` and PAPER_TRADING toggle
 
 Run with `streamlit run src/dashboard/app.py`.
 """
 
 from __future__ import annotations
 
+import io
 import json
 import os
-from datetime import timezone
-from pathlib import Path
+import zipfile
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
@@ -33,10 +35,11 @@ from src.notify.daily_report import (
 from src.persistence.db import (
     AIDecision,
     EquitySnapshot,
+    Position,
+    SafetyState,
     Trade,
     make_session_factory,
 )
-
 
 # ---------------------------------------------------------------------------
 # Data loaders
@@ -490,6 +493,117 @@ def page_positions() -> None:
     st.dataframe(df[cols], width="stretch", hide_index=True)
 
 
+# ---------------------------------------------------------------------------
+# Data export
+# ---------------------------------------------------------------------------
+
+# Tables exposed on the export page. Order = display order.
+# Each entry: (display_name, ORM model, time column for date filter or None)
+_EXPORT_TABLES: list[tuple[str, type, str | None]] = [
+    ("trades", Trade, "opened_at"),
+    ("ai_decisions", AIDecision, "created_at"),
+    ("equity_snapshots", EquitySnapshot, "snapshot_at"),
+    ("positions", Position, None),
+    ("safety_state", SafetyState, None),
+]
+
+
+def _load_table_df(model: type, time_col: str | None, since: datetime | None) -> pd.DataFrame:
+    """Pull one table to a DataFrame, optionally filtered to rows after `since`."""
+    sf = _session_factory()
+    stmt = select(model)
+    if since is not None and time_col is not None:
+        stmt = stmt.where(getattr(model, time_col) >= since)
+    with sf() as s:
+        rows = s.execute(stmt).scalars().all()
+    if not rows:
+        return pd.DataFrame(columns=[c.name for c in model.__table__.columns])
+    return pd.DataFrame([_row_to_dict(r) for r in rows])
+
+
+def _df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """UTF-8 CSV with no index column — what every spreadsheet tool expects."""
+    return df.to_csv(index=False).encode("utf-8")
+
+
+def _build_zip_bundle(since: datetime | None) -> bytes:
+    """Pack all tables into a single in-memory zip — one CSV per table."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for name, model, time_col in _EXPORT_TABLES:
+            df = _load_table_df(model, time_col, since)
+            zf.writestr(f"{name}.csv", _df_to_csv_bytes(df))
+    return buf.getvalue()
+
+
+def page_data_export() -> None:
+    st.header("Data Export")
+    st.caption(
+        "Download raw DB tables as CSV. Use these as input for offline "
+        "analysis (Excel, pandas, the chat AI you're sharing them with)."
+    )
+
+    with st.sidebar:
+        st.subheader("Export filter")
+        # Date filter only narrows the time-stamped tables (`trades`,
+        # `ai_decisions`, `equity_snapshots`); `positions` and
+        # `safety_state` are always exported in full because they're
+        # tiny snapshots, not append-only logs.
+        choice = st.radio(
+            "Time window",
+            ["all", "last 1 day", "last 7 days", "last 30 days"],
+            index=0,
+            key="export_window",
+        )
+    since: datetime | None = None
+    if choice == "last 1 day":
+        since = datetime.now(tz=timezone.utc) - timedelta(days=1)
+    elif choice == "last 7 days":
+        since = datetime.now(tz=timezone.utc) - timedelta(days=7)
+    elif choice == "last 30 days":
+        since = datetime.now(tz=timezone.utc) - timedelta(days=30)
+
+    stamp = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+    # One-click bundle first — that's what most users actually want.
+    st.subheader("Bundle")
+    st.write(
+        "Single zip with one CSV per table. Date filter applies to "
+        "trades / ai_decisions / equity_snapshots; positions and safety_state "
+        "are exported in full."
+    )
+    zip_bytes = _build_zip_bundle(since)
+    st.download_button(
+        label=f"⬇️ Download all tables ({len(zip_bytes) / 1024:.1f} KiB)",
+        data=zip_bytes,
+        file_name=f"ai_trader_export_{stamp}.zip",
+        mime="application/zip",
+        key="export_zip",
+    )
+
+    st.divider()
+
+    # Per-table buttons + a small preview, in case you only need one.
+    st.subheader("Per-table CSV")
+    for name, model, time_col in _EXPORT_TABLES:
+        df = _load_table_df(model, time_col, since)
+        cols = st.columns([3, 1])
+        cols[0].markdown(
+            f"**`{name}`** — {len(df)} row(s)"
+            + (f", filtered by `{time_col}`" if (since and time_col) else "")
+        )
+        cols[1].download_button(
+            label="CSV",
+            data=_df_to_csv_bytes(df),
+            file_name=f"{name}_{stamp}.csv",
+            mime="text/csv",
+            key=f"export_csv_{name}",
+        )
+        if not df.empty:
+            with st.expander(f"Preview {name} (first 20 rows)", expanded=False):
+                st.dataframe(df.head(20), width="stretch", hide_index=True)
+
+
 def page_settings() -> None:
     st.header("Settings")
     st.caption("Read-only view of the active configuration. Edit `.env` to change.")
@@ -540,6 +654,7 @@ PAGES = {
     "Trades": page_trades,
     "AI Decisions": page_ai_decisions,
     "Positions": page_positions,
+    "Data Export": page_data_export,
     "Settings": page_settings,
 }
 
