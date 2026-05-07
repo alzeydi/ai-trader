@@ -114,9 +114,19 @@ class Trader:
                 candidate=signal,
             )
 
+        # 1c. Fast account pre-check — runs BEFORE market-context REST calls
+        # and the LLM veto so we don't spend tokens or rate-limit budget when
+        # the account cannot physically take another trade.
+        account = self._account_state()
+        skip, skip_reason = self._pre_trade_check(account)
+        if skip:
+            log.debug("%s: pre-trade skip — %s", symbol, skip_reason)
+            return CycleResult(
+                symbol=symbol, accepted=False, reason=skip_reason, candidate=signal,
+            )
+
         # 2. Build veto inputs from market context + DB-derived account state.
         ctx_payload = self._market_context_payload(signal)
-        account = self._account_state()
         account_payload = {
             "open_positions": account.open_positions,
             "daily_pnl_pct": account.daily_pnl_pct,
@@ -209,6 +219,33 @@ class Trader:
             "btc_dominance": mc.btc_dominance,
             "btc_direction": mc.btc_1h_direction,
         }
+
+    def _pre_trade_check(self, account: AccountState) -> tuple[bool, str]:
+        """Cheap deterministic gate evaluated before market-context REST calls
+        and the LLM veto.  Returns (should_skip, reason).
+
+        Mirrors the hard rules inside preflight_check / can_take_signal but
+        runs earlier so we never pay for a Claude API call or funding/OI fetch
+        when the account cannot open another trade regardless of signal quality.
+        """
+        if account.open_positions >= settings.max_open_positions:
+            return True, f"max_open_positions={settings.max_open_positions} reached"
+        if account.daily_pnl_pct <= -float(settings.max_daily_loss_pct):
+            return True, f"daily DD hit: {account.daily_pnl_pct:.2f}%"
+        if self.safety.is_active():
+            return True, f"safety mode active until {self.safety.until}"
+        # Margin floor: if free margin is below the minimum needed for a
+        # policy-sized position (equity × max_margin_per_trade_pct), sizing
+        # will clamp the order to a micro-notional that doesn't survive the
+        # min_notional_usd filter anyway.  Skip early and save the LLM call.
+        if account.free_margin_usd is not None and settings.leverage > 0:
+            min_margin = account.equity * float(settings.max_margin_per_trade_pct)
+            if account.free_margin_usd < min_margin:
+                return True, (
+                    f"insufficient free margin: "
+                    f"${account.free_margin_usd:.2f} < ${min_margin:.2f} required"
+                )
+        return False, "ok"
 
     def _market_max_qty(self, symbol: str) -> float | None:
         """Per-order MAX_QTY from the cached ccxt markets table.
