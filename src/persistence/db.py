@@ -307,6 +307,37 @@ def has_recent_losing_b_trade(
     return row is not None
 
 
+def has_recent_type_e_decision(
+    session_factory: SessionFactory,
+    symbol: str,
+    cooldown_hours: int,
+) -> bool:
+    """True iff a Type-E candidate for `symbol` was recorded in the last
+    `cooldown_hours` (regardless of veto verdict).
+
+    Strategy E scans the in-progress H4 bar every loop tick, so without this
+    per-symbol dedup the same setup would re-fire every cycle for the rest of
+    the 4h bar. Spec §5: each individual symbol fires at most once per 24 h.
+
+    Checked against `ai_decisions` (not `trades`) so the cooldown engages even
+    when the LLM vetoes the candidate — otherwise vetoed E's would burn fresh
+    LLM calls every minute.
+    """
+    if cooldown_hours <= 0:
+        return False
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=cooldown_hours)
+    with session_factory() as s:
+        row = s.execute(
+            select(AIDecision)
+            .where(AIDecision.symbol == symbol)
+            .where(AIDecision.entry_type == "E")
+            .where(AIDecision.created_at >= cutoff)
+            .order_by(AIDecision.created_at.desc())
+            .limit(1)
+        ).scalars().first()
+    return row is not None
+
+
 def count_open_trades(session_factory: SessionFactory) -> int:
     with session_factory() as s:
         rows = s.execute(

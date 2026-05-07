@@ -323,12 +323,14 @@ class SignalEngine:
         # E is a pure 4h structural trade: the bounce low is the natural
         # stop and 4h-ATR is stored for informational context.
         # ════════════════════════════════════════════════════════════════════
-        # Strip the current in-progress 4h candle: Binance always returns it
-        # as the last row, but its close/open/low are still changing. Passing
-        # it would let an unfinished green wick trigger a signal that disappears
-        # by bar close. All other strategies use close_4h (also the open bar),
-        # but Type E explicitly validates bar shape — it must see only closed bars.
-        e_sig = detect_ma25_bounce(symbol, df_4h.iloc[:-1])
+        # Pass the FULL H4 frame including the in-progress bar. Strategy E is
+        # designed to evaluate the live bar so a setup can be entered as soon
+        # as conditions look satisfied, instead of waiting up to 4h for bar
+        # close (spec §1 — "USES the in-progress H4 bar"). The host bot's
+        # stop-loss absorbs the risk of the live bar reversing before close;
+        # the per-symbol 24h cooldown in trader.py prevents the same symbol
+        # from re-firing every 60 s while the live bar continues to qualify.
+        e_sig = detect_ma25_bounce(symbol, df_4h)
         if e_sig is not None:
             entry_e = e_sig["entry_price"]
             ma25_e  = e_sig["ma25"]

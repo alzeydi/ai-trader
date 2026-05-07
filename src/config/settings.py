@@ -201,6 +201,12 @@ class Settings(BaseSettings):
     # than 3 % below MA25 indicate a flash-crash / liquidation cascade, not
     # a measured pullback; they have different follow-through statistics.
     ma25_touch_min_pct: float = 0.03
+    # Per-symbol cooldown after any Type-E candidate fires. Strategy E scans
+    # the in-progress H4 bar every loop tick (default 60 s); without a dedup
+    # window the same symbol would re-trigger every cycle for the rest of the
+    # 4h bar. Spec §5: "symbol fires at 04:34 → cooldown starts → 24h silence
+    # for THIS symbol regardless of how its forming bar evolves".
+    ma25_symbol_cooldown_hours: int = 24
 
     # ----- Signal engine -----
     timeframe_trend: str = "4h"

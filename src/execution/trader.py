@@ -26,6 +26,7 @@ from src.persistence.db import (
     count_open_trades,
     daily_realized_pnl,
     has_recent_losing_b_trade,
+    has_recent_type_e_decision,
     make_session_factory,
 )
 from src.risk.limits import can_take_signal
@@ -111,6 +112,24 @@ class Trader:
                 symbol=symbol,
                 accepted=False,
                 reason="b_loss_cooldown",
+                candidate=signal,
+            )
+
+        # 1b'. Type-E per-symbol 24h cooldown. Strategy E re-evaluates the
+        # in-progress H4 bar every loop tick, so a qualifying setup would
+        # otherwise re-fire every 60 s for the rest of the bar. The spec
+        # mandates one fire per symbol per 24h. Checked BEFORE the LLM call
+        # so vetoed E's don't burn tokens every cycle either.
+        if signal.entry_type == "E" and has_recent_type_e_decision(
+            self.session_factory,
+            symbol,
+            settings.ma25_symbol_cooldown_hours,
+        ):
+            log.info("%s: Type E suppressed by 24h per-symbol cooldown", symbol)
+            return CycleResult(
+                symbol=symbol,
+                accepted=False,
+                reason="e_symbol_cooldown",
                 candidate=signal,
             )
 
