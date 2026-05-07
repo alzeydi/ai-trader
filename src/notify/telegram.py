@@ -150,6 +150,7 @@ class TelegramNotifier:
     ) -> None:
         symbol = _get(order, "symbol", "?")
         side = str(_get(order, "side", "long"))
+        entry_type = str(_get(order, "entry_type", "") or "")
         leverage = _get(order, "leverage", 1) or 1
         entry = float(_get(order, "entry_price", _get(order, "entry", 0.0)) or 0.0)
         qty = float(_get(order, "quantity", _get(order, "qty", 0.0)) or 0.0)
@@ -167,8 +168,9 @@ class TelegramNotifier:
         rr = (reward_dist / risk_dist) if risk_dist > 0 else 0.0
 
         emoji = _side_emoji(side)
+        type_tag = f" [Type {entry_type}]" if entry_type else ""
         lines = [
-            f"{emoji} *ENTRY* `{symbol}` *{side.upper()}* x{leverage}",
+            f"{emoji} *ENTRY* `{symbol}` *{side.upper()}* x{leverage}{type_tag}",
             f"Entry: `{entry:.4f}`",
             f"Qty: `{qty:.6f}`",
             f"Margin: `{margin_usd:,.2f}` USDT",
