@@ -165,6 +165,31 @@ class Settings(BaseSettings):
     safety_max_consecutive_losses: int = 3
     safety_pause_hours: int = 24
 
+    # Per-trade risk for Type E (MA25 bounce). Between A/D (2 %) and B/C
+    # (1 %): the setup is with-trend like A, but fires less often and on a
+    # tighter structural reference, so we start conservative until we have
+    # live trade statistics. Tune via MA25_RISK_PCT env var once you have
+    # ≥30 closed trades.
+    risk_per_trade_type_e: float = 0.015  # 1.5 % of equity
+
+    # ----- MA25 Bounce (Strategy X) -----
+    # MA25 must have risen by at least this many % over the 12-bar look-back
+    # window to confirm the uptrend is active (not just inertial drift).
+    ma25_slope_min_pct: float = 0.5
+    # Fraction of the 10 prior bars (candles[-11:-1]) that must have closed
+    # above MA25. Separates "pullback in uptrend" from "reclaim from below".
+    ma25_prior_above_min: float = 0.7
+    # Max % the current close may sit above MA25. Entries past this are
+    # chasing a bounce that has already run its course.
+    ma25_pct_above_max: float = 4.0
+    # Upper bound of the touch zone (as a fraction above MA25). A bar whose
+    # lowest wick never reached within 0.5 % of MA25 never bounced off it.
+    ma25_touch_max_pct: float = 0.005
+    # Lower bound of the touch zone (as a fraction below MA25). Wicks more
+    # than 3 % below MA25 indicate a flash-crash / liquidation cascade, not
+    # a measured pullback; they have different follow-through statistics.
+    ma25_touch_min_pct: float = 0.03
+
     # ----- Signal engine -----
     timeframe_trend: str = "4h"
     timeframe_structure: str = "1h"

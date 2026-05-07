@@ -14,14 +14,15 @@ Public API:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import pandas as pd
 
 from src.config import settings
 from src.data.binance_client import BinanceClient
 from src.data.indicators import atr14, ema, macd, rsi14, swing_high_low
+from src.signal.ma25_bounce import detect_ma25_bounce
 from src.signal.types import CandidateSignal
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,22 @@ def _score_b(rsi_4h: float, side: str, hist_delta: float) -> float:
 
 def _score_c(proximity: float, rsi_delta: float) -> float:
     return round(min(0.50 * proximity + 0.50 * min(abs(rsi_delta) / 8.0, 1.0), 0.99), 2)
+
+
+def _score_e(slope_pct: float, prior_above: float, pct_above: float) -> float:
+    """Score Type E MA25-bounce candidates.
+
+    slope_pct:   MA25 rise over 12-bar window (%). Floor 0.5 % already held.
+    prior_above: fraction of 10 prior bars closed above MA25 (floor 0.7).
+    pct_above:   how far current close sits above MA25 (0–4 %). Lower = fresher.
+    """
+    # Stronger slope → better-established uptrend behind the bounce.
+    slope = min(max(slope_pct - 0.5, 0.0) / 2.5, 1.0) * 0.40
+    # More prior bars above MA25 → cleaner pullback, not a reclaim-from-below.
+    ctx   = min((prior_above - 0.7) / 0.3, 1.0) * 0.35
+    # Entry closer to MA25 → fresher signal, less chasing.
+    fresh = max(0.0, 1.0 - pct_above / 4.0) * 0.25
+    return round(min(slope + ctx + fresh, 0.99), 2)
 
 
 def _score_d(vol_ratio: float, excess_pct: float, close_position: float) -> float:
@@ -102,6 +119,7 @@ class SignalEngine:
         macd_4h   = macd(df_4h)
         hist_4h   = macd_4h["hist"]
         close_4h  = float(c4.iloc[-1])
+        atr_4h_val = float(atr14(df_4h).iloc[-1])
 
         # ── 1h indicators ──────────────────────────────────────────────────
         c1 = df_1h["close"]
@@ -144,7 +162,7 @@ class SignalEngine:
 
         # NaN guard — any key indicator being NaN aborts
         guards = [ema50_4h, ema200_4h, rsi_4h, hist_4h.iloc[-1], hist_4h.iloc[-2],
-                  ema50_1h, atr_1h_val, rsi_now, rsi_prev, atr_val,
+                  ema50_1h, atr_1h_val, rsi_now, rsi_prev, atr_val, atr_4h_val,
                   hist_15.iloc[-1], hist_15.iloc[-2]]
         if any(pd.isna(g) for g in guards):
             log.debug("%s: one or more indicators are NaN, skipping", symbol)
@@ -165,7 +183,7 @@ class SignalEngine:
         sh_ref = swing_h if swing_h is not None else close_1h * 1.02
         sl_ref = swing_l if swing_l is not None else close_1h * 0.98
 
-        now = datetime.now(tz=timezone.utc)
+        now = datetime.now(tz=UTC)
 
         # ════════════════════════════════════════════════════════════════════
         # TYPE A — with-trend pullback
@@ -295,6 +313,44 @@ class SignalEngine:
                                 swing_high_1h=sh_ref, swing_low_1h=sl_ref,
                                 atr_14_1h=atr_1h_val,
                             )
+
+        # ════════════════════════════════════════════════════════════════════
+        # TYPE E — MA25 Confirmed Bounce (Strategy X)
+        #
+        # With-trend long on the 4h MA25. Fires only when A and D have
+        # already declined (otherwise one of them would have returned above).
+        # Unlike A (near 1h-EMA50 with RSI turn) and D (1h breakout),
+        # E is a pure 4h structural trade: the bounce low is the natural
+        # stop and 4h-ATR is stored for informational context.
+        # ════════════════════════════════════════════════════════════════════
+        e_sig = detect_ma25_bounce(symbol, df_4h)
+        if e_sig is not None:
+            entry_e = e_sig["entry_price"]
+            ma25_e  = e_sig["ma25"]
+            pct_above_e = (entry_e - ma25_e) / ma25_e * 100.0 if ma25_e > 0 else 0.0
+            strength_e = _score_e(
+                slope_pct=e_sig["slope_pct"],
+                prior_above=e_sig["prior_above"],
+                pct_above=pct_above_e,
+            )
+            if strength_e >= 0.25:
+                log.info(
+                    "%s: Type E MA25-bounce LONG "
+                    "slope=%.2f%% prior_above=%.2f pct_above=%.2f%% "
+                    "bounce_low=%.5f strength=%.2f",
+                    symbol, e_sig["slope_pct"], e_sig["prior_above"],
+                    pct_above_e, e_sig["bounce_low"], strength_e,
+                )
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="long",
+                    entry_type="E", signal_strength=strength_e,
+                    entry_price_ref=entry_e,
+                    atr_14=atr_4h_val,        # 4h ATR: context, not used for SL
+                    atr_14_1h=None,
+                    swing_high_1h=sh_ref,
+                    swing_low_1h=float(e_sig["bounce_low"]),
+                    sl_price_hint=float(e_sig["bounce_low"]),  # structural stop
+                )
 
         # ════════════════════════════════════════════════════════════════════
         # TYPE B — counter-trend extreme

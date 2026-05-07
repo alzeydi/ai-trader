@@ -50,6 +50,7 @@ _RISK_BY_TYPE: dict[str, str] = {
     "B": "risk_per_trade_type_b",
     "C": "risk_per_trade_type_c",
     "D": "risk_per_trade_type_d",
+    "E": "risk_per_trade_type_e",
 }
 
 
@@ -76,20 +77,32 @@ def size_position(
     risk_pct = getattr(settings, _RISK_BY_TYPE[candidate.entry_type])
     risk_usd = account.equity * risk_pct
 
-    # Type C trades the 1h range, so its stop must clear 1h noise — using
-    # the 15m ATR here produced sub-1% stops that got nuked on the next
-    # candle. Fall back to atr_14 if the 1h figure isn't populated (legacy
-    # fixtures / backtest harness).
-    atr = (
-        candidate.atr_14_1h
-        if candidate.entry_type == "C" and candidate.atr_14_1h is not None
-        else candidate.atr_14
-    )
-    atr_sl_distance = atr * settings.atr_stop_multiplier
-    sl_distance = atr_sl_distance
-
     entry = candidate.entry_price_ref
-    if entry <= 0 or sl_distance <= 0:
+    if entry <= 0:
+        return None
+
+    # --- Stop distance resolution ---
+    # Structural hint (e.g. bounce_low for Type E): use the chart-derived
+    # price directly. The signal has already validated that bounce_low is
+    # below the entry, so the distance is always positive.
+    if candidate.sl_price_hint is not None:
+        atr = candidate.atr_14  # informational only (used in log)
+        sl_distance = abs(entry - candidate.sl_price_hint)
+        atr_sl_distance = sl_distance  # for logging symmetry
+    else:
+        # Type C trades the 1h range, so its stop must clear 1h noise —
+        # using the 15m ATR here produced sub-1% stops that got nuked on
+        # the next candle. Fall back to atr_14 if the 1h figure isn't
+        # populated (legacy fixtures / backtest harness).
+        atr = (
+            candidate.atr_14_1h
+            if candidate.entry_type == "C" and candidate.atr_14_1h is not None
+            else candidate.atr_14
+        )
+        atr_sl_distance = atr * settings.atr_stop_multiplier
+        sl_distance = atr_sl_distance
+
+    if sl_distance <= 0:
         return None
 
     # Volatility floor: on calm symbols even a 1h ATR can resolve to ~0.3 %

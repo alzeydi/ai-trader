@@ -15,7 +15,7 @@ class TradeOrder(BaseModel):
 
     symbol: str
     side: Literal["long", "short"]
-    entry_type: Literal["A", "B", "C", "D"]
+    entry_type: Literal["A", "B", "C", "D", "E"]
     quantity: float = Field(gt=0)
     leverage: int = Field(gt=0)
     entry_price: float = Field(gt=0)
