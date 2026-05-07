@@ -242,7 +242,9 @@ def _render_btc_regime_banner() -> None:
 
     regime = snap["regime"]
     slope = snap["slope_pct"]
-    thr = snap["threshold_pct"]
+    slope_thr = snap["slope_threshold_pct"]
+    price_dist = snap["price_dist_pct"]
+    price_thr = snap["price_dist_threshold_pct"]
     period = snap["period"]
     lookback = snap["lookback"]
 
@@ -253,21 +255,38 @@ def _render_btc_regime_banner() -> None:
     else:
         allowed, blocked, color = "BOTH sides allowed", "—", "⚪"
 
-    c1, c2, c3 = st.columns([1.2, 1.2, 2])
+    # Which signal triggered the verdict — helps explain "why".
+    if regime != "flat":
+        if snap["price_signal"] == regime and snap["slope_signal"] == regime:
+            trigger = "slope + price"
+        elif snap["price_signal"] == regime:
+            trigger = "price (EMA lagging)"
+        else:
+            trigger = "slope"
+    else:
+        trigger = "neither signal past threshold"
+
+    c1, c2, c3 = st.columns([1.4, 1.4, 2])
     c1.metric(
         f"{color} BTC regime",
         regime.upper(),
-        f"EMA{period} slope {slope:+.3f}% / {lookback}h",
+        f"slope {slope:+.3f}%  ·  price {price_dist:+.2f}% off EMA",
     )
-    c2.metric("Threshold", f"±{thr:.2f}% / {lookback}h")
-    c3.metric("Gate verdict", allowed, blocked, delta_color="off")
-    # Raw values the gate actually computed — useful when the chart says
-    # one thing and the banner another (cache staleness, Demo data drift, etc.)
+    c2.metric(
+        "Thresholds",
+        f"slope ±{slope_thr:.2f}%/{lookback}h",
+        f"price ±{price_thr:.2f}%",
+        delta_color="off",
+    )
+    c3.metric("Gate verdict", allowed, f"{blocked} · trigger: {trigger}",
+              delta_color="off")
+    # Raw values the gate actually computed.
     st.caption(
-        f"diag: ema_now={snap['ema_now']:,.2f}  ema_{lookback}h_ago="
-        f"{snap['ema_past']:,.2f}  slope={slope:+.4f}%  "
-        f"threshold=±{thr:.2f}%  period={period}  lookback={lookback}h  "
-        f"endpoint={snap['endpoint']}"
+        f"diag: price_now={snap['price_now']:,.2f}  ema_now={snap['ema_now']:,.2f}  "
+        f"ema_{lookback}h_ago={snap['ema_past']:,.2f}  slope={slope:+.4f}%  "
+        f"price_dist={price_dist:+.4f}%  | slope_signal={snap['slope_signal']}  "
+        f"price_signal={snap['price_signal']}  | period=EMA{period}  "
+        f"lookback={lookback}h  endpoint={snap['endpoint']}"
     )
 
 

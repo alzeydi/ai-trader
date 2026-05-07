@@ -1,18 +1,20 @@
-"""Global BTC regime gate (EMA-slope based).
+"""Global BTC regime gate (EMA slope + price-distance, combined).
 
-Hard pre-veto filter that blocks long candidates when BTC's H1 EMA is
-sloping down and short candidates when it is sloping up. Applies uniformly
-to all entry types (A / B / C / D / E).
+Hard pre-veto filter that blocks long candidates when BTC's H1 trend is
+down and short candidates when it is up. Applies uniformly to all entry
+types (A / B / C / D / E).
 
-Why EMA-slope and not last-bar delta:
-  • Old logic compared `close[-1]` (in-progress) with `close[-2]` (last
-    closed) — a one-bar window. While BTC was visibly dumping over 4-5
-    hours, the gate would read "flat" because the very last bar's delta
-    happened to be small.
-  • EMA(50)-on-H1 with a multi-bar slope captures the actual trend: the
-    line you see drawn on a TradingView H1 chart. Slope is measured as
-    `(ema_now − ema_lookback_ago) / ema_lookback_ago × 100` — i.e. how
-    much the EMA itself has moved over the lookback window.
+Two independent signals, OR'd together:
+
+  1. EMA slope. ema = EMA(period, H1 closes); slope_pct = (ema_now −
+     ema_lookback_ago) / ema_lookback_ago × 100.
+  2. Price distance from EMA. dist_pct = (close_now − ema_now) / ema_now
+     × 100.
+
+EMA50 is a LAGGING filter: in a sharp move the spot price decouples from
+the EMA before the EMA's slope catches up. The price-distance signal
+covers that gap. If either signal crosses its threshold, the gate fires;
+on disagreement, price wins (it leads).
 
 Why a separate module from `data/context.py`:
   • `data/context.py:_compute_btc_direction` feeds the LLM as informational
@@ -48,9 +50,14 @@ class BtcRegimeSnapshot(TypedDict):
     ema_now: float
     ema_past: float
     slope_pct: float
+    slope_signal: Regime
+    price_now: float
+    price_dist_pct: float
+    price_signal: Regime
     period: int
     lookback: int
-    threshold_pct: float
+    slope_threshold_pct: float
+    price_dist_threshold_pct: float
     endpoint: str
 
 
@@ -59,10 +66,19 @@ _cached: BtcRegimeSnapshot | None = None
 _cached_at: float = 0.0
 
 
+def _signal(value: float, threshold: float) -> Regime:
+    if value > threshold:
+        return "up"
+    if value < -threshold:
+        return "down"
+    return "flat"
+
+
 def _fetch_snapshot(client) -> BtcRegimeSnapshot | None:  # noqa: ANN001 — avoid import cycle
     period = int(settings.btc_regime_ema_period)
     lookback = int(settings.btc_regime_slope_lookback)
-    threshold = float(settings.btc_regime_slope_threshold_pct)
+    slope_threshold = float(settings.btc_regime_slope_threshold_pct)
+    price_dist_threshold = float(settings.btc_regime_price_dist_threshold_pct)
 
     # 2× period buffer for a stable EMA seed; +lookback for the slope window;
     # +5 padding so we never run off the start of the array.
@@ -82,14 +98,21 @@ def _fetch_snapshot(client) -> BtcRegimeSnapshot | None:  # noqa: ANN001 — avo
     ema = df["close"].ewm(span=period, adjust=False).mean()
     ema_now = float(ema.iloc[-1])
     ema_past = float(ema.iloc[-1 - lookback])
-    if ema_past <= 0:
+    price_now = float(df["close"].iloc[-1])
+    if ema_past <= 0 or ema_now <= 0:
         return None
     slope_pct = (ema_now - ema_past) / ema_past * 100.0
+    price_dist_pct = (price_now - ema_now) / ema_now * 100.0
 
-    if slope_pct > threshold:
-        regime: Regime = "up"
-    elif slope_pct < -threshold:
-        regime = "down"
+    slope_signal = _signal(slope_pct, slope_threshold)
+    price_signal = _signal(price_dist_pct, price_dist_threshold)
+
+    # Combine: any non-flat signal fires; on disagreement, price wins
+    # (leading indicator vs lagging EMA slope).
+    if price_signal != "flat":
+        regime: Regime = price_signal
+    elif slope_signal != "flat":
+        regime = slope_signal
     else:
         regime = "flat"
 
@@ -99,9 +122,14 @@ def _fetch_snapshot(client) -> BtcRegimeSnapshot | None:  # noqa: ANN001 — avo
         ema_now=ema_now,
         ema_past=ema_past,
         slope_pct=slope_pct,
+        slope_signal=slope_signal,
+        price_now=price_now,
+        price_dist_pct=price_dist_pct,
+        price_signal=price_signal,
         period=period,
         lookback=lookback,
-        threshold_pct=threshold,
+        slope_threshold_pct=slope_threshold,
+        price_dist_threshold_pct=price_dist_threshold,
         endpoint=endpoint,
     )
 

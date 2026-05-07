@@ -224,6 +224,12 @@ class Settings(BaseSettings):
     btc_regime_ema_period: int = 50          # H1 bars; EMA50 = standard trend filter
     btc_regime_slope_lookback: int = 6       # H1 bars; "EMA50 changed X% over 6h"
     btc_regime_slope_threshold_pct: float = 0.15  # 0.15 % over 6h ≈ 0.025 %/bar
+    # Spot price's distance from EMA50, in %. EMA50 is a lagging filter:
+    # during a sharp move the price decouples from the EMA before the EMA's
+    # slope catches up. Combined verdict: regime is non-flat if EITHER
+    # slope OR price-distance crosses its threshold (price wins on
+    # disagreement — it's the leading indicator).
+    btc_regime_price_dist_threshold_pct: float = 0.5
 
     # ----- Signal engine -----
     timeframe_trend: str = "4h"
