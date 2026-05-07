@@ -383,6 +383,7 @@ class OrderExecutor:
             trade_id=trade_id,
             fill_price=close_price,
             pnl_usd=pnl,
+            fees_usd=fees,
             reason=reason,
         )
 
@@ -465,6 +466,15 @@ class OrderExecutor:
                 success=False, paper=False, reason=f"entry_rejected: {exc}"
             )
         entry_id = str(entry_resp.get("id") or "")
+
+        # Use the actual filled quantity from the exchange response. Binance
+        # applies LOT_SIZE / MARKET_LOT_SIZE step-size rounding server-side,
+        # so the filled qty may differ from order.quantity. Storing the
+        # exchange-reported filled qty ensures PnL accounting at close uses
+        # the same quantity as Binance's own realized-PnL calculation.
+        actual_qty = float(entry_resp.get("filled") or entry_resp.get("amount") or order.quantity)
+        if actual_qty <= 0:
+            actual_qty = order.quantity
 
         # Anchor SL/TP to the actual fill, not the stale candle reference.
         # Without this, a small adverse move between signal generation and
@@ -564,6 +574,7 @@ class OrderExecutor:
             entry_override=fill_price,
             stop_override=sl_price,
             take_override=tp_price,
+            qty_override=actual_qty,
         )
         return ExecutionResult(
             success=True,
@@ -597,6 +608,7 @@ class OrderExecutor:
             side = row.side
             stop_oid = row.stop_order_id
             take_oid = row.take_order_id
+            trail_oid = row.trail_stop_order_id
             entry_oid = row.entry_order_id
             entry_px = float(row.entry) if row.entry is not None else 0.0
             opened_at = row.opened_at
@@ -613,7 +625,7 @@ class OrderExecutor:
             # Exchange already closed the position via SL or TP. Recover the
             # fill price from whichever bracket order is in a filled state;
             # cancel the sibling so it doesn't linger.
-            for oid in (stop_oid, take_oid):
+            for oid in (stop_oid, take_oid, trail_oid):
                 if not oid:
                     continue
                 try:
@@ -622,12 +634,20 @@ class OrderExecutor:
                     log.warning("fetch_order %s failed: %s", oid, exc)
                     continue
                 status = (o.get("status") or "").lower()
-                avg = o.get("average") or o.get("price")
-                if status in ("closed", "filled") and avg:
-                    try:
-                        fill = float(avg)
-                    except (TypeError, ValueError):
-                        fill = 0.0
+                if status not in ("closed", "filled"):
+                    continue
+                # Prefer `average` (VWAP of actual fills) over `price`
+                # (trigger price). For TAKE_PROFIT_MARKET/STOP_MARKET algo
+                # orders Binance sometimes returns average=0 while price
+                # carries the trigger level — using trigger inflates PnL.
+                try:
+                    avg_fill = float(o.get("average") or 0.0)
+                    trigger = float(o.get("price") or 0.0)
+                except (TypeError, ValueError):
+                    avg_fill, trigger = 0.0, 0.0
+                candidate = avg_fill if avg_fill > 0 else trigger
+                if candidate > 0:
+                    fill = candidate
                     break
             for oid in (stop_oid, take_oid):
                 if not oid:
@@ -686,7 +706,8 @@ class OrderExecutor:
             except Exception as exc:  # noqa: BLE001
                 log.warning("fetch_my_trades failed for %s: %s", symbol, exc)
 
-        exit_fills, entry_fills = self._split_fills(my_trades, entry_oid)
+        exit_oids = tuple(str(o) for o in (stop_oid, take_oid, trail_oid) if o)
+        exit_fills, entry_fills = self._split_fills(my_trades, entry_oid, exit_oids)
         vwap_exit = self._vwap(exit_fills)
         fee_exit = self._sum_fee_usdt(exit_fills)
         fee_entry = self._sum_fee_usdt(entry_fills)
@@ -735,6 +756,7 @@ class OrderExecutor:
             trade_id=row_id,
             fill_price=fill,
             pnl_usd=pnl,
+            fees_usd=total_fees,
             reason=reason,
         )
 
@@ -808,11 +830,13 @@ class OrderExecutor:
         entry_override: float | None = None,
         stop_override: float | None = None,
         take_override: float | None = None,
+        qty_override: float | None = None,
     ) -> int:
         with self.session_factory() as s:
             entry_val = entry_override if entry_override is not None else order.entry_price
             stop_val = stop_override if stop_override is not None else order.stop_loss
             tp_val = take_override if take_override is not None else order.take_profit
+            qty_val = qty_override if qty_override is not None else order.quantity
             row = Trade(
                 symbol=order.symbol,
                 side=order.side,
@@ -821,7 +845,7 @@ class OrderExecutor:
                 stop=stop_val,
                 original_stop=stop_val,
                 take_profit=tp_val,
-                quantity=order.quantity,
+                quantity=qty_val,
                 leverage=order.leverage,
                 risk_usd=order.risk_usd,
                 pnl_usd=0.0,
@@ -846,14 +870,19 @@ class OrderExecutor:
     def _split_fills(
         trades: list[dict[str, Any]],
         entry_order_id: str | None,
+        exit_order_ids: tuple[str, ...] = (),
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Partition userTrades into (exit_fills, entry_fills).
 
-        Exit fills = reduceOnly trades (closing/decreasing the position).
-        Entry fills = trades belonging to the recorded entry order id, OR
-        any non-reduceOnly trades if the order id can't be matched (the
-        entry response in `_open_live` is the only place we capture the
-        entry id, so a missing id falls back to the side heuristic).
+        Exit fills are identified by two independent signals:
+          1. reduceOnly flag in the trade/info dict (reliable for regular orders)
+          2. order-ID match against stop_order_id / take_order_id /
+             trail_stop_order_id (catches algo-endpoint fills where Binance
+             does NOT set reduceOnly in the userTrades response — observed
+             after the 2025-12-09 algo-order migration).
+
+        Entry fills are matched by entry_order_id; fall back to all
+        non-exit trades when the id is absent (legacy / backtest).
         """
         exits: list[dict[str, Any]] = []
         entries: list[dict[str, Any]] = []
@@ -861,11 +890,11 @@ class OrderExecutor:
             info = t.get("info") or {}
             ro = info.get("reduceOnly")
             is_reduce = ro in (True, "true") or t.get("reduceOnly") is True
-            if is_reduce:
+            oid = str(t.get("order") or info.get("orderId") or "")
+            if is_reduce or (exit_order_ids and oid in exit_order_ids):
                 exits.append(t)
                 continue
-            oid = t.get("order") or info.get("orderId")
-            if entry_order_id and str(oid) == str(entry_order_id):
+            if entry_order_id and oid == str(entry_order_id):
                 entries.append(t)
             elif not entry_order_id:
                 entries.append(t)

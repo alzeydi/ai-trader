@@ -464,7 +464,11 @@ class PositionMonitor:
                     "quantity": float(trade.quantity or 0.0),
                     "pnl_usd": float(result.pnl_usd),
                     "leverage": int(trade.leverage or 1),
-                    "fees": float(trade.fees or 0.0),
+                    # result.fees_usd carries the actual computed fees from _close_live /
+                    # _close_paper; trade.fees at this point is still the pre-close DB
+                    # value (0 or entry-only) because the session was committed after
+                    # ExecutionResult was returned.
+                    "fees": float(result.fees_usd if result.fees_usd is not None else trade.fees or 0.0),
                     "close_reason": reason,
                 }
                 self.notifier.send_close_signal(snapshot)

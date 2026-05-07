@@ -37,4 +37,5 @@ class ExecutionResult(BaseModel):
     take_order_id: str | None = None
     fill_price: float | None = None
     pnl_usd: float | None = None
+    fees_usd: float | None = None  # actual round-trip fees at close
     reason: str = ""
