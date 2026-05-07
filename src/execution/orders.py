@@ -743,7 +743,8 @@ class OrderExecutor:
             symbol = row.symbol
             side = row.side
             qty = float(row.quantity)
-            old_oid = row.stop_order_id
+            original_stop_oid = row.stop_order_id  # bracket SL — must survive
+            old_trail_oid = row.trail_stop_order_id  # previous trail SL to replace
 
         if self.paper or self.client is None:
             new_oid = ""
@@ -764,11 +765,12 @@ class OrderExecutor:
                 log.warning("replace_stop: new SL placement failed for %s: %s", symbol, exc)
                 return False
             new_oid = str(resp.get("id") or "")
-            # Sweep every other STOP-class reduce-only order, keeping the
-            # freshly placed one and leaving TP_MARKET alone. Targeted
-            # cancel of `old_oid` is unreliable on demo-fapi.
+            # Keep the original bracket SL (original_stop_oid) and the new
+            # trail SL (new_oid) as a two-layer backstop. Cancel only the
+            # previous trail SL and any other stale STOP orders.
+            keep_ids = tuple(oid for oid in (new_oid, original_stop_oid) if oid)
             cancel_symbol_conditionals(
-                ex, symbol, keep_ids=(new_oid,), only_stop=True
+                ex, symbol, keep_ids=keep_ids, only_stop=True
             )
             new_stop = new_stop_priced
 
@@ -777,7 +779,7 @@ class OrderExecutor:
             if row is None:
                 return False
             row.stop = float(new_stop)
-            row.stop_order_id = new_oid
+            row.trail_stop_order_id = new_oid
             s.commit()
         log.info(
             "trail: SL tightened %s side=%s -> %.6f trade_id=%d",
