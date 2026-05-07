@@ -353,8 +353,11 @@ def test_sizing_uses_bounce_low_as_stop() -> None:
     assert abs(order.stop_loss - b_low) < 1e-4, (
         f"stop_loss {order.stop_loss} != bounce_low {b_low}"
     )
-    # TP must be 2× the risk distance above entry (atr_take/atr_stop = 2.0)
-    expected_tp = entry + 2.0 * (entry - b_low)
+    # TP for Type E is anchored to 4h ATR × atr_take_multiplier (not SL distance).
+    # A wide structural stop must not push the target unreachably far.
+    from src.config import settings
+    expected_tp = entry + atr_4h * settings.atr_take_multiplier
     assert abs(order.take_profit - expected_tp) < 1e-4, (
-        f"take_profit {order.take_profit} != expected {expected_tp}"
+        f"take_profit {order.take_profit} != expected {expected_tp} "
+        f"(atr_4h={atr_4h} × atr_take_multiplier={settings.atr_take_multiplier})"
     )
