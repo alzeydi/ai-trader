@@ -22,3 +22,18 @@ def _isolated_db(tmp_path, monkeypatch):
     """
     monkeypatch.setattr("src.config.settings.db_path", str(tmp_path / "test.db"))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_veto_cache():
+    """Clear the in-process LLM veto decision cache before each test.
+
+    _DECISION_CACHE is module-level and persists between tests in the same
+    process. Without this, a TAKE verdict cached by an earlier test leaks
+    into a later test that expects a fresh LLM call, producing ghost decisions
+    (wrong confidence, wrong reasoning) that break assertions.
+    """
+    import src.llm.veto as veto_mod
+    veto_mod._DECISION_CACHE.clear()
+    yield
+    veto_mod._DECISION_CACHE.clear()

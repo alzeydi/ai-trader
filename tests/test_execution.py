@@ -85,13 +85,16 @@ def test_paper_open_records_trade_with_full_metadata():
 def test_paper_close_long_computes_positive_pnl():
     sf = make_session_factory()
     fake_client = MagicMock()
-    fake_client.fetch_ticker.return_value = {"last": 2050.0}  # +50 USDT × 0.1 = +5 USDT
+    fake_client.fetch_ticker.return_value = {"last": 2050.0}  # +50 USDT × 0.1 = +5 USDT gross
     executor = OrderExecutor(client=fake_client, paper=True, session_factory=sf)
     executor.open_position(_order(side="long"))
 
     result = executor.close_position("ETH/USDT:USDT", reason="manual")
     assert result.success
-    assert result.pnl_usd == pytest.approx(5.0)
+    # Net PnL = gross - round-trip fees (entry + exit legs at taker rate).
+    from src.config import settings
+    expected_fees = 0.1 * (2000.0 + 2050.0) * float(settings.taker_fee_pct)
+    assert result.pnl_usd == pytest.approx(5.0 - expected_fees)
 
     closed = get_last_n_closed_trades(sf, 1)
     assert len(closed) == 1
@@ -130,7 +133,10 @@ def test_paper_close_short_inverts_pnl_sign():
     executor = OrderExecutor(client=fake_client, paper=True, session_factory=sf)
     executor.open_position(_order(side="short"))
     result = executor.close_position("ETH/USDT:USDT", reason="manual")
-    assert result.pnl_usd == pytest.approx(0.1 * (2000.0 - 1950.0))
+    from src.config import settings
+    gross = 0.1 * (2000.0 - 1950.0)
+    expected_fees = 0.1 * (2000.0 + 1950.0) * float(settings.taker_fee_pct)
+    assert result.pnl_usd == pytest.approx(gross - expected_fees)
 
 
 def test_paper_close_no_open_trade_returns_failure():
