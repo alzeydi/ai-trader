@@ -132,9 +132,15 @@ class Settings(BaseSettings):
     # `d_max_excess_pct` filters out stale breakouts where price has
     # already run too far past the level — chasing a breakout 5 % past
     # invalidation has negative edge.
+    # `d_max_ema_dist_pct` guards against entering a breakout when price
+    # has already extended too far from 1h-EMA50: the breakout should
+    # originate from a consolidation near the MAs, not from mid-air after
+    # a large runup. Tuned at 3 % — blocks entries like XRPUSDT 2026-05-07
+    # where price was 2.4 %+ above MA25(1h) before the signal fired.
     d_breakout_lookback_bars: int = 20
     d_min_vol_ratio: float = 1.3
     d_max_excess_pct: float = 0.02
+    d_max_ema_dist_pct: float = 0.03  # 3 % from EMA50(1h)
     min_confidence: float = 0.7
     taker_fee_pct: float = 0.0004  # 0.04 % per leg on Binance USDT-M
     # Binance USDT-M futures rejects any non-reduce-only order whose notional
