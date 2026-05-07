@@ -14,9 +14,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
-
 import ccxt
+from sqlalchemy import select
 
 from src.config import settings
 from src.execution.types import ExecutionResult, TradeOrder
@@ -454,6 +453,16 @@ class OrderExecutor:
                      order.symbol, exc)
             return ExecutionResult(
                 success=False, paper=False, reason=f"invalid_order: {exc}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Catches -4005 "Quantity greater than max quantity" (ccxt.BadRequest)
+            # and any other exchange rejection not covered above. Invalidate the
+            # veto cooldown so the next cycle issues a fresh LLM call instead of
+            # looping on the stale TAKE that produced the rejected order.
+            log.error("skip open %s: entry order rejected: %s", order.symbol, exc)
+            invalidate_cooldown(order.symbol)
+            return ExecutionResult(
+                success=False, paper=False, reason=f"entry_rejected: {exc}"
             )
         entry_id = str(entry_resp.get("id") or "")
 

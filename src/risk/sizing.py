@@ -189,13 +189,20 @@ def size_position(
         )
         return None
 
+    if sl_floor_active:
+        sl_basis_label = "min_stop_floor"
+    elif candidate.sl_price_hint is not None:
+        sl_basis_label = "sl_price_hint"
+    else:
+        sl_basis_label = "atr"
+
     log.info(
         "%s %s sized: qty=%.6f notional=%.2f cap=%s "
         "sl_distance=%.6f sl_pct=%.3f%% sl_basis=%s atr=%.6f "
         "(atr_sl=%.6f floor=%.6f, uncapped_qty=%.6f, policy_max=%.2f, equity=%.2f)",
         candidate.symbol, candidate.side, quantity, notional, last_cap,
         sl_distance, sl_distance / entry * 100.0,
-        "min_stop_floor" if sl_floor_active else "atr",
+        sl_basis_label,
         atr,
         atr_sl_distance, min_stop_distance,
         qty_uncapped, policy_max_notional, account.equity,
