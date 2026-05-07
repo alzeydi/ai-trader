@@ -1,11 +1,16 @@
-"""Tests for detect_ma25_bounce() — synthetic OHLCV data, no network."""
+"""Tests for detect_ma25_bounce() and engine Type E integration."""
 
 from __future__ import annotations
+
+import unittest.mock as mock
 
 import numpy as np
 import pandas as pd
 
+from src.risk.sizing import size_position
+from src.risk.types import AccountState
 from src.signal.ma25_bounce import detect_ma25_bounce
+from src.signal.types import CandidateSignal
 
 # ── fixture builder ───────────────────────────────────────────────────────────
 
@@ -241,3 +246,110 @@ def test_prior_above_exactly_07_passes() -> None:
 
     result = detect_ma25_bounce("X", df)
     assert result is not None
+
+
+# ── engine integration (Type E) ───────────────────────────────────────────────
+
+def _make_engine_dfs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Return (df_4h, df_1h, df_15m) suitable for SignalEngine._evaluate.
+
+    df_4h:  300 bars in a clean uptrend with MA25-bounce pattern at the end.
+    df_1h:  100 bars, flat (near-EMA50) — prevents A/D/B/C from firing.
+    df_15m: 200 bars with neutral RSI — prevents A/B/C from firing.
+    """
+    # --- df_4h: rising 90→120, bounce at end ---
+    n4 = 300
+    base4 = np.linspace(90.0, 120.0, n4)
+    closes4 = base4.copy()
+    ma25_est = float(np.mean(closes4[-25:]))
+    closes4[-3] = ma25_est * 1.010
+    closes4[-2] = ma25_est * 1.008
+    closes4[-1] = ma25_est * 1.020
+    opens4 = closes4.copy()
+    opens4[-1] = closes4[-1] * 0.997
+    highs4 = closes4 * 1.002
+    lows4  = closes4 * 0.998
+    actual_ma25 = float(np.mean(closes4[-25:]))
+    lows4[-2] = actual_ma25 * 1.002
+    idx4 = pd.date_range("2024-01-01", periods=n4, freq="4h", tz="UTC")
+    df_4h = pd.DataFrame(
+        {"open": opens4, "high": highs4, "low": lows4,
+         "close": closes4, "volume": 1000.0},
+        index=idx4,
+    )
+
+    # --- df_1h: 99 bars at 130, last bar at 119 ---
+    # close_1h (119) is 8 % below ema50_1h (≈130) → near_ema50 = False
+    # → Type A and C cannot fire.  No 1h breakout (close dipped, not broke
+    # above the prior 20-bar high) → Type D cannot fire.
+    closes1 = np.concatenate([np.full(99, 130.0), [119.0]])
+    idx1 = pd.date_range("2024-01-01", periods=100, freq="1h", tz="UTC")
+    df_1h = pd.DataFrame(
+        {"open": closes1, "high": closes1 * 1.002,
+         "low": closes1 * 0.998, "close": closes1, "volume": 1000.0},
+        index=idx1,
+    )
+
+    # --- df_15m: alternating ±0.1 around 119 → RSI ≈ 50, non-NaN ---
+    # rsi_prev ≈ 50 which is NOT < 45 → rsi_up = False → Type A blocked.
+    # Type B SHORT blocked by the 4h HTF gate (close >> EMA200 by >> 5 %).
+    closes15 = np.tile([119.1, 118.9], 100).astype(float)
+    idx15 = pd.date_range("2024-01-01", periods=200, freq="15min", tz="UTC")
+    df_15m = pd.DataFrame(
+        {"open": closes15, "high": closes15 * 1.002,
+         "low": closes15 * 0.998, "close": closes15, "volume": 1000.0},
+        index=idx15,
+    )
+
+    return df_4h, df_1h, df_15m
+
+
+def test_engine_emits_type_e_candidate() -> None:
+    """_evaluate with a valid MA25-bounce 4h series must return entry_type='E'."""
+    from src.signal.engine import SignalEngine
+
+    df_4h, df_1h, df_15m = _make_engine_dfs()
+    engine = SignalEngine(client=mock.MagicMock())
+    sig = engine._evaluate("BTCUSDT", df_4h, df_1h, df_15m)
+
+    assert sig is not None, "expected a CandidateSignal, got None"
+    assert sig.entry_type == "E"
+    assert sig.side == "long"
+    assert sig.sl_price_hint is not None
+    assert sig.sl_price_hint < sig.entry_price_ref  # stop is below entry
+
+
+def test_sizing_uses_bounce_low_as_stop() -> None:
+    """size_position with sl_price_hint must place SL at bounce_low, not ATR."""
+    entry   = 100.0
+    b_low   = 97.5   # 2.5 % below entry — the bounce low
+    atr_4h  = 3.0    # 4h ATR; would give SL at 100 - 1.5*3 = 95.5 if used
+
+    candidate = CandidateSignal(
+        symbol="BTCUSDT", side="long", entry_type="E",
+        signal_strength=0.60,
+        entry_price_ref=entry, atr_14=atr_4h, atr_14_1h=None,
+        swing_high_1h=105.0, swing_low_1h=b_low,
+        sl_price_hint=b_low,
+    )
+    account = AccountState(
+        equity=10_000.0, open_positions=0,
+        daily_pnl_pct=0.0, consecutive_losses=0,
+        free_margin_usd=10_000.0,
+    )
+    veto = mock.MagicMock()
+    veto.confidence = 0.85
+    veto.invalidation_signal = "test"
+
+    order = size_position(candidate, account, veto)
+
+    assert order is not None
+    # SL must be at bounce_low (within floating-point rounding)
+    assert abs(order.stop_loss - b_low) < 1e-4, (
+        f"stop_loss {order.stop_loss} != bounce_low {b_low}"
+    )
+    # TP must be 2× the risk distance above entry (atr_take/atr_stop = 2.0)
+    expected_tp = entry + 2.0 * (entry - b_low)
+    assert abs(order.take_profit - expected_tp) < 1e-4, (
+        f"take_profit {order.take_profit} != expected {expected_tp}"
+    )

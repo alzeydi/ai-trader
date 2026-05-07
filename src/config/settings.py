@@ -165,6 +165,13 @@ class Settings(BaseSettings):
     safety_max_consecutive_losses: int = 3
     safety_pause_hours: int = 24
 
+    # Per-trade risk for Type E (MA25 bounce). Between A/D (2 %) and B/C
+    # (1 %): the setup is with-trend like A, but fires less often and on a
+    # tighter structural reference, so we start conservative until we have
+    # live trade statistics. Tune via MA25_RISK_PCT env var once you have
+    # ≥30 closed trades.
+    risk_per_trade_type_e: float = 0.015  # 1.5 % of equity
+
     # ----- MA25 Bounce (Strategy X) -----
     # MA25 must have risen by at least this many % over the 12-bar look-back
     # window to confirm the uptrend is active (not just inertial drift).
