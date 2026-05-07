@@ -220,6 +220,8 @@ class SignalEngine:
             bar_range = max(high_1h - low_1h, 1e-12)
             d_min_vol = float(settings.d_min_vol_ratio)
             d_max_excess = float(settings.d_max_excess_pct)
+            d_max_ema_dist = float(settings.d_max_ema_dist_pct)
+            ema_dist_1h = abs(close_1h - float(ema50_1h)) / float(ema50_1h)
 
             if (
                 bullish
@@ -227,28 +229,35 @@ class SignalEngine:
                 and prior_high > 0
                 and vol_ratio >= d_min_vol
             ):
-                excess = (close_1h - prior_high) / prior_high
-                if excess > d_max_excess:
+                if ema_dist_1h > d_max_ema_dist:
                     log.info(
-                        "%s: Type D LONG skipped, breakout stale "
-                        "(close %.2f%% above %d-bar high > %.2f%%)",
-                        symbol, excess * 100, d_lookback, d_max_excess * 100,
+                        "%s: Type D LONG skipped, entry too far from EMA50(1h) "
+                        "(%.2f%% > %.2f%%)",
+                        symbol, ema_dist_1h * 100, d_max_ema_dist * 100,
                     )
                 else:
-                    close_pos = (close_1h - low_1h) / bar_range
-                    strength = _score_d(vol_ratio, excess, close_pos)
-                    if strength >= 0.30:
+                    excess = (close_1h - prior_high) / prior_high
+                    if excess > d_max_excess:
                         log.info(
-                            "%s: Type D LONG (excess=%.2f%% vol=%.2fx) strength=%.2f",
-                            symbol, excess * 100, vol_ratio, strength,
+                            "%s: Type D LONG skipped, breakout stale "
+                            "(close %.2f%% above %d-bar high > %.2f%%)",
+                            symbol, excess * 100, d_lookback, d_max_excess * 100,
                         )
-                        return CandidateSignal(
-                            timestamp=now, symbol=symbol, side="long",
-                            entry_type="D", signal_strength=strength,
-                            entry_price_ref=close_1h, atr_14=atr_val,
-                            swing_high_1h=sh_ref, swing_low_1h=sl_ref,
-                            atr_14_1h=atr_1h_val,
-                        )
+                    else:
+                        close_pos = (close_1h - low_1h) / bar_range
+                        strength = _score_d(vol_ratio, excess, close_pos)
+                        if strength >= 0.30:
+                            log.info(
+                                "%s: Type D LONG (excess=%.2f%% ema_dist=%.2f%% vol=%.2fx) strength=%.2f",
+                                symbol, excess * 100, ema_dist_1h * 100, vol_ratio, strength,
+                            )
+                            return CandidateSignal(
+                                timestamp=now, symbol=symbol, side="long",
+                                entry_type="D", signal_strength=strength,
+                                entry_price_ref=close_1h, atr_14=atr_val,
+                                swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                                atr_14_1h=atr_1h_val,
+                            )
 
             if (
                 bearish
@@ -256,29 +265,36 @@ class SignalEngine:
                 and prior_low > 0
                 and vol_ratio >= d_min_vol
             ):
-                excess = (prior_low - close_1h) / prior_low
-                if excess > d_max_excess:
+                if ema_dist_1h > d_max_ema_dist:
                     log.info(
-                        "%s: Type D SHORT skipped, breakdown stale "
-                        "(close %.2f%% below %d-bar low > %.2f%%)",
-                        symbol, excess * 100, d_lookback, d_max_excess * 100,
+                        "%s: Type D SHORT skipped, entry too far from EMA50(1h) "
+                        "(%.2f%% > %.2f%%)",
+                        symbol, ema_dist_1h * 100, d_max_ema_dist * 100,
                     )
                 else:
-                    # Mirror of long: 1.0 = closed at bar low (decisive break).
-                    close_pos = (high_1h - close_1h) / bar_range
-                    strength = _score_d(vol_ratio, excess, close_pos)
-                    if strength >= 0.30:
+                    excess = (prior_low - close_1h) / prior_low
+                    if excess > d_max_excess:
                         log.info(
-                            "%s: Type D SHORT (excess=%.2f%% vol=%.2fx) strength=%.2f",
-                            symbol, excess * 100, vol_ratio, strength,
+                            "%s: Type D SHORT skipped, breakdown stale "
+                            "(close %.2f%% below %d-bar low > %.2f%%)",
+                            symbol, excess * 100, d_lookback, d_max_excess * 100,
                         )
-                        return CandidateSignal(
-                            timestamp=now, symbol=symbol, side="short",
-                            entry_type="D", signal_strength=strength,
-                            entry_price_ref=close_1h, atr_14=atr_val,
-                            swing_high_1h=sh_ref, swing_low_1h=sl_ref,
-                            atr_14_1h=atr_1h_val,
-                        )
+                    else:
+                        # Mirror of long: 1.0 = closed at bar low (decisive break).
+                        close_pos = (high_1h - close_1h) / bar_range
+                        strength = _score_d(vol_ratio, excess, close_pos)
+                        if strength >= 0.30:
+                            log.info(
+                                "%s: Type D SHORT (excess=%.2f%% ema_dist=%.2f%% vol=%.2fx) strength=%.2f",
+                                symbol, excess * 100, ema_dist_1h * 100, vol_ratio, strength,
+                            )
+                            return CandidateSignal(
+                                timestamp=now, symbol=symbol, side="short",
+                                entry_type="D", signal_strength=strength,
+                                entry_price_ref=close_1h, atr_14=atr_val,
+                                swing_high_1h=sh_ref, swing_low_1h=sl_ref,
+                                atr_14_1h=atr_1h_val,
+                            )
 
         # ════════════════════════════════════════════════════════════════════
         # TYPE B — counter-trend extreme
