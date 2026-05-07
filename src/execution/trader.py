@@ -29,6 +29,7 @@ from src.persistence.db import (
     has_recent_type_e_decision,
     make_session_factory,
 )
+from src.risk.btc_regime import get_btc_regime, is_blocked as btc_regime_blocks
 from src.risk.limits import can_take_signal
 from src.risk.sizing import size_position
 from src.risk.types import AccountState
@@ -132,6 +133,23 @@ class Trader:
                 reason="e_symbol_cooldown",
                 candidate=signal,
             )
+
+        # 1d. Global BTC regime gate. BTC up → longs only; BTC down → shorts
+        # only; flat → both allowed. Fail-open on fetch errors (regime=None).
+        # Runs BEFORE the LLM call so vetoed candidates don't burn tokens.
+        if settings.btc_regime_enabled:
+            regime = get_btc_regime(self.binance)
+            if btc_regime_blocks(regime, signal.side):
+                log.info(
+                    "%s: %s suppressed by BTC regime gate (regime=%s)",
+                    symbol, signal.side, regime,
+                )
+                return CycleResult(
+                    symbol=symbol,
+                    accepted=False,
+                    reason=f"btc_regime_{regime}",
+                    candidate=signal,
+                )
 
         # 1c. Fast account pre-check — runs BEFORE market-context REST calls
         # and the LLM veto so we don't spend tokens or rate-limit budget when

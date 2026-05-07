@@ -208,6 +208,17 @@ class Settings(BaseSettings):
     # for THIS symbol regardless of how its forming bar evolves".
     ma25_symbol_cooldown_hours: int = 24
 
+    # ----- Global BTC regime gate -----
+    # Hard pre-veto filter: blocks longs when BTC is falling and shorts when
+    # BTC is rising. Runs BEFORE the LLM call so vetoed candidates don't burn
+    # tokens. Applies uniformly to all entry types (A/B/C/D/E).
+    btc_regime_enabled: bool = True
+    # Move (in %) over the last 1h close required to declare up/down. Below
+    # this, regime is "flat" and both sides are allowed. 0.3 % chosen over
+    # the 0.1 % used for LLM context to avoid flapping the gate every hour
+    # on noise — at 0.1 % a typical 1h bar oscillates the verdict 2-3x/h.
+    btc_regime_threshold_pct: float = 0.3
+
     # ----- Signal engine -----
     timeframe_trend: str = "4h"
     timeframe_structure: str = "1h"
