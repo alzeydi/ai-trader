@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from src.config import settings
@@ -13,6 +14,8 @@ from src.execution.types import TradeOrder
 from src.llm.types import VetoResponse
 from src.risk.types import AccountState
 from src.signal.types import CandidateSignal
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -106,19 +109,24 @@ def size_position(
     quantity = risk_usd / sl_distance
     if quantity <= 0:
         return None
+    last_cap = "risk_dollar"
+    qty_uncapped = quantity
 
     # Per-trade margin policy cap: don't let a single trade consume more
     # than `max_margin_per_trade_pct` of equity in initial margin. This is
     # what equalises position sizes across symbols — without it, low-price
     # coins blow out to absurd notionals because qty = risk / sl_distance
     # explodes when sl_distance is small in absolute terms.
+    policy_max_notional = 0.0
     if settings.leverage > 0 and settings.max_margin_per_trade_pct > 0:
         max_margin = account.equity * settings.max_margin_per_trade_pct
-        max_qty_by_policy = (max_margin * settings.leverage) / entry
+        policy_max_notional = max_margin * settings.leverage
+        max_qty_by_policy = policy_max_notional / entry
         if max_qty_by_policy <= 0:
             return None
         if quantity > max_qty_by_policy:
             quantity = max_qty_by_policy
+            last_cap = "policy_margin"
 
     # Cap quantity by free margin so we never request a notional the wallet
     # cannot back. Required margin per contract = entry / leverage; reserve
@@ -131,6 +139,7 @@ def size_position(
             return None
         if quantity > max_qty:
             quantity = max_qty
+            last_cap = "free_margin"
 
     # Exchange per-order MAX_QTY (Binance -4005). Cheap perps (STRK, ZIL,
     # 1000PEPE…) have caps in the 50k–1M contracts range; risk-USD-based
@@ -139,12 +148,38 @@ def size_position(
     # effect is a slightly under-sized position on those pairs.
     if market_max_qty is not None and market_max_qty > 0 and quantity > market_max_qty:
         quantity = market_max_qty
+        last_cap = "market_max_qty"
 
-    # Exchange minimum notional (Binance -4164). If sizing landed below the
-    # floor — typically because free margin is tiny — reject cleanly so the
-    # trader cycle continues instead of firing a doomed order.
-    if quantity * entry < settings.min_notional_usd:
+    # "Meaningful notional" floor. A trade whose final notional is a tiny
+    # fraction of the policy cap is almost always the result of the
+    # free-margin cap binding when many positions are already open
+    # (observed 2026-05-06: 10 parallel opens drained the demo wallet, the
+    # next ~12 candidates all sized to $5–$15 notional and produced PnL
+    # smaller than fees). Skip those instead of opening micro-positions —
+    # they distort stats and have no meaningful R:R after fees. The floor
+    # scales with equity via `policy_max_notional`, so the rule still does
+    # the right thing on a $50 testnet wallet vs a $50k live one.
+    notional = quantity * entry
+    floor_pct = float(settings.min_notional_pct_of_policy)
+    floor_from_policy = policy_max_notional * floor_pct if floor_pct > 0 else 0.0
+    effective_min_notional = max(settings.min_notional_usd, floor_from_policy)
+    if notional < effective_min_notional:
+        log.info(
+            "%s %s: skip — %s cap binds notional=%.2f < min=%.2f "
+            "(policy_max=%.2f, free_margin=%s, equity=%.2f)",
+            candidate.symbol, candidate.side, last_cap,
+            notional, effective_min_notional, policy_max_notional,
+            f"{account.free_margin_usd:.2f}" if account.free_margin_usd is not None else "n/a",
+            account.equity,
+        )
         return None
+
+    log.info(
+        "%s %s sized: qty=%.6f notional=%.2f cap=%s "
+        "(uncapped_qty=%.6f, policy_max=%.2f, equity=%.2f)",
+        candidate.symbol, candidate.side, quantity, notional, last_cap,
+        qty_uncapped, policy_max_notional, account.equity,
+    )
 
     if candidate.side == "long":
         sl = entry - sl_distance

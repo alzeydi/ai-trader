@@ -140,6 +140,19 @@ class Settings(BaseSettings):
     # Binance USDT-M futures rejects any non-reduce-only order whose notional
     # is below ~5 USDT (error -4164). Sizing rejects below this floor.
     min_notional_usd: float = 5.0
+    # "Meaningful trade" floor as a fraction of the policy cap notional
+    # (`equity × max_margin_per_trade_pct × leverage`). When the free-margin
+    # cap forces qty below this, sizing returns None instead of opening a
+    # micro-position. Default 0.30 means: if the trade can only get 30 % of
+    # its intended size, skip it. Set to 0.0 to disable.
+    #
+    # Tuning history: introduced 2026-05-07 after observing a cluster of
+    # $5–$15-notional trades on Railway demo (#102–#125) that opened when
+    # ~10 parallel positions had drained the wallet's free margin. Each
+    # micro-position was barely larger than fees and added noise to stats
+    # without contributing any signal. 30 % is the smallest fraction that
+    # still leaves meaningful R:R after a typical 2 × taker round-trip.
+    min_notional_pct_of_policy: float = 0.30
     max_hold_hours: int = 8
 
     # ----- Safety mode -----
