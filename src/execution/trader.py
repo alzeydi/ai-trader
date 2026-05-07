@@ -145,7 +145,10 @@ class Trader:
             )
 
         # 5. Sizing.
-        order = size_position(signal, account, veto)
+        order = size_position(
+            signal, account, veto,
+            market_max_qty=self._market_max_qty(symbol),
+        )
         if order is None:
             return CycleResult(
                 symbol=symbol,
@@ -207,6 +210,31 @@ class Trader:
             "btc_direction": mc.btc_1h_direction,
         }
 
+    def _market_max_qty(self, symbol: str) -> float | None:
+        """Per-order MAX_QTY from the cached ccxt markets table.
+
+        ccxt populates `limits.amount.max` from Binance's MARKET_LOT_SIZE /
+        LOT_SIZE filters. Markets are loaded once at startup
+        (`_filter_known_symbols`), so this is a dict lookup, not a REST call.
+        Returns None on any failure so sizing falls back to "no clamp" rather
+        than blocking entries on a metadata hiccup.
+        """
+        try:
+            market = self.binance.exchange.markets.get(symbol) if (
+                self.binance is not None and self.binance.exchange.markets
+            ) else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("market lookup failed for %s: %s", symbol, exc)
+            return None
+        if not market:
+            return None
+        amount_limits = (market.get("limits") or {}).get("amount") or {}
+        max_amount = amount_limits.get("max")
+        try:
+            return float(max_amount) if max_amount is not None else None
+        except (TypeError, ValueError):
+            return None
+
     def _account_state(self) -> AccountState:
         # Live balance from the exchange takes precedence over the static
         # `settings.equity_usd` fallback. Without this, sizing computes risk
@@ -261,7 +289,10 @@ class Trader:
             daily_pnl_pct=risk_state.daily_pnl_pct,
             consecutive_losses=self.safety.consecutive_losses,
         )
-        order = size_position(signal, account, veto)
+        order = size_position(
+            signal, account, veto,
+            market_max_qty=self._market_max_qty(signal.symbol),
+        )
         if order is None:
             return _LegacyOutcome(False, "size rejected")
         result = self.executor.open_position(order)

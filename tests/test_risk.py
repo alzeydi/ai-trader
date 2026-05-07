@@ -196,6 +196,52 @@ def test_size_position_short_flips_sl_and_tp():
     assert order.risk_usd == pytest.approx(1000.0 * settings.risk_per_trade_type_b, rel=1e-3)
 
 
+def test_size_position_clamps_to_market_max_qty():
+    """When computed qty exceeds the exchange's per-order MAX_QTY, clamp down.
+
+    Cheap perps (STRK ~ $0.20) blow past Binance's MAX_QTY filter and earn
+    -4005 rejections. The risk layer must silently shrink the order.
+    """
+    cand = CandidateSignal(
+        symbol="STRK/USDT:USDT",
+        side="long",
+        entry_type="A",
+        signal_strength=0.7,
+        entry_price_ref=0.2,
+        atr_14=0.002,        # raw sl distance 0.003 → ~1.5 % of price
+        swing_high_1h=0.21,
+        swing_low_1h=0.19,
+    )
+    cap = 1234.0
+    order = size_position(
+        cand, _account(equity=1000.0), _veto(), market_max_qty=cap,
+    )
+    assert order is not None
+    assert order.quantity == pytest.approx(cap)
+
+
+def test_size_position_no_clamp_when_market_max_qty_none():
+    """Backtest / unit-test path: passing None must leave qty untouched."""
+    cand = _candidate(side="long", entry_type="A")
+    no_cap = size_position(cand, _account(equity=1000.0), _veto())
+    with_none = size_position(
+        cand, _account(equity=1000.0), _veto(), market_max_qty=None,
+    )
+    assert no_cap is not None and with_none is not None
+    assert no_cap.quantity == with_none.quantity
+
+
+def test_size_position_max_qty_does_not_inflate_small_qty():
+    """A generous MAX_QTY must never enlarge a normally-sized order."""
+    cand = _candidate(side="long", entry_type="A")
+    plain = size_position(cand, _account(equity=1000.0), _veto())
+    capped = size_position(
+        cand, _account(equity=1000.0), _veto(), market_max_qty=1_000_000.0,
+    )
+    assert plain is not None and capped is not None
+    assert capped.quantity == plain.quantity
+
+
 def test_size_position_floors_stop_at_min_stop_pct_on_low_vol():
     """ATR tiny relative to price → SL distance is floored at min_stop_pct of entry."""
     cand = CandidateSignal(
