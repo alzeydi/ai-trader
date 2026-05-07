@@ -242,6 +242,55 @@ def test_size_position_max_qty_does_not_inflate_small_qty():
     assert capped.quantity == plain.quantity
 
 
+def test_size_position_skips_when_free_margin_cap_binds_micro_notional(monkeypatch):
+    """Free-margin cap dropping notional below `min_notional_pct_of_policy`
+    must produce a skip, not a $5 micro-position.
+
+    Reproduces the 2026-05-06 Railway incident: 10 parallel opens drained
+    free margin, the next ~12 candidates sized to $5–$15 notional each.
+    With the floor in place, those should return None instead.
+    """
+    monkeypatch.setattr(settings, "min_notional_pct_of_policy", 0.30)
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    # equity $5000 → policy cap notional = 0.10 × 5000 × leverage = $1500.
+    # 30 % floor = $450. Free margin $5 lets at most $5 × 3 × 0.9 = $13.5
+    # notional through the cap — well under the floor.
+    account = _account(equity=5000.0, free_margin_usd=5.0)
+    assert size_position(cand, account, _veto()) is None
+
+
+def test_size_position_passes_when_free_margin_only_slightly_squeezes(monkeypatch):
+    """Free-margin cap that lands above the floor must still produce an order."""
+    monkeypatch.setattr(settings, "min_notional_pct_of_policy", 0.30)
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    # Free margin $300 → cap notional = 300 × 3 × 0.9 = $810, above the
+    # $450 floor. Trade should go through, capped down from policy max.
+    account = _account(equity=5000.0, free_margin_usd=300.0)
+    order = size_position(cand, account, _veto())
+    assert order is not None
+    assert order.quantity * order.entry_price <= 810.0 + 1e-6
+    assert order.quantity * order.entry_price >= 450.0
+
+
+def test_size_position_floor_disabled_when_pct_zero(monkeypatch):
+    """Setting the floor to 0 must restore the legacy "only Binance min" behaviour."""
+    monkeypatch.setattr(settings, "min_notional_pct_of_policy", 0.0)
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    # Same free margin that produced a skip above must now produce an
+    # order (notional ≈ $13.5, above the absolute $5 Binance floor).
+    account = _account(equity=5000.0, free_margin_usd=5.0)
+    order = size_position(cand, account, _veto())
+    assert order is not None
+    assert 5.0 <= order.quantity * order.entry_price < 50.0
+
+
+def test_size_position_floor_does_not_block_normal_sized_trade():
+    """Default settings must still let a fully-funded type A trade through."""
+    cand = _candidate(side="long", entry_type="A", price=2000.0)
+    order = size_position(cand, _account(equity=1000.0), _veto())
+    assert order is not None
+
+
 def test_size_position_floors_stop_at_min_stop_pct_on_low_vol():
     """ATR tiny relative to price → SL distance is floored at min_stop_pct of entry."""
     cand = CandidateSignal(

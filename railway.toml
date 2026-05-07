@@ -55,14 +55,25 @@ LEVERAGE = "3"
 MARGIN_MODE = "ISOLATED"
 
 # ----- Risk -----
-# Statistics-collection mode: limits effectively disabled so the bot can
-# accumulate a long history of trades without auto-pausing.
+# Statistics-collection mode: dollar-loss limits disabled so the bot can
+# accumulate a long history of trades without auto-pausing. Position
+# parallelism IS capped, however: with `max_margin_per_trade_pct = 0.10`
+# the wallet only physically holds ~10 simultaneous policy-sized trades
+# before free margin runs out, after which subsequent candidates either
+# get squashed by the free-margin cap into micro-positions (worthless for
+# stats) or get skipped by `min_notional_pct_of_policy`. Capping here at
+# 12 keeps a small buffer above that natural ceiling without bleeding
+# into the "all trades are $10 dust" regime.
 RISK_PER_TRADE_PCT = "0.5"
-MAX_OPEN_POSITIONS = "10000"
+MAX_OPEN_POSITIONS = "12"
 MAX_DAILY_LOSS_PCT = "100.0"
 MAX_DRAWDOWN_PCT = "100.0"
 ATR_STOP_MULTIPLIER = "1.5"
 ATR_TAKE_MULTIPLIER = "3.0"
+# Skip the trade when the free-margin cap pushes notional under this
+# fraction of the policy cap. 0.30 = "if we can't even get 30 % of the
+# intended size, don't bother". See settings.py for tuning history.
+MIN_NOTIONAL_PCT_OF_POLICY = "0.30"
 
 # ----- Type B counter-trend gates -----
 B_TREND_BLOCK_PCT = "0.05"
