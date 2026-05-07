@@ -73,6 +73,10 @@ class Trade(Base):
     original_stop = Column(Float, nullable=True)
     trail_armed = Column(Boolean, default=False)
     trail_high_water = Column(Float, nullable=True)
+    # Order ID of the currently live trail SL. Kept separate from
+    # stop_order_id (original bracket SL) so both orders stay on the
+    # exchange as a two-layer backstop.
+    trail_stop_order_id = Column(String(64), nullable=True)
 
     # --- spec aliases ----------------------------------------------------
     @property
@@ -238,6 +242,7 @@ def _ensure_trade_columns(engine) -> None:
         "original_stop": "REAL",
         "trail_armed": "BOOLEAN DEFAULT 0",
         "trail_high_water": "REAL",
+        "trail_stop_order_id": "TEXT",
     }
     with engine.begin() as conn:
         rows = conn.exec_driver_sql("PRAGMA table_info(trades)").fetchall()

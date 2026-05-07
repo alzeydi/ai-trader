@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # budget) — bump higher for chop, lower for trending alts.
     breakeven_activate_pct: float = 0.010   # 1.0 % of notional
     breakeven_lock_pct: float = 0.0075      # 0.75 % of notional
-    trail_distance_pct: float = 0.009       # 0.9 % of notional
+    trail_distance_pct: float = 0.00675     # 0.675 % of notional (was 0.9 %, −25 %)
     # ----- Type B counter-trend gates -----
     # Type B fires on extreme 4h RSI + 15m reversal. Without a 1h trend
     # filter it keeps fading every minor pullback on a strongly trending

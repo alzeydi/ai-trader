@@ -226,7 +226,9 @@ class PositionMonitor:
                 continue
 
             keep = tuple(
-                oid for oid in (trade.stop_order_id, trade.take_order_id) if oid
+                oid for oid in (
+                    trade.stop_order_id, trade.trail_stop_order_id, trade.take_order_id
+                ) if oid
             )
             if not keep:
                 # DB row exists but we don't know which orders belong to it
