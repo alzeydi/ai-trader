@@ -253,24 +253,29 @@ def test_prior_above_exactly_07_passes() -> None:
 def _make_engine_dfs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Return (df_4h, df_1h, df_15m) suitable for SignalEngine._evaluate.
 
-    df_4h:  300 bars in a clean uptrend with MA25-bounce pattern at the end.
+    df_4h:  301 bars — 300 closed + 1 in-progress (stripped by engine).
+            Bounce pattern at the SECOND-TO-LAST closed bar so that after
+            engine.py strips df_4h.iloc[-1] the signal bar is iloc[-1].
     df_1h:  100 bars, flat (near-EMA50) — prevents A/D/B/C from firing.
     df_15m: 200 bars with neutral RSI — prevents A/B/C from firing.
     """
-    # --- df_4h: rising 90→120, bounce at end ---
-    n4 = 300
+    # --- df_4h: rising 90→120, bounce at end (301 bars total) ---
+    # Row [-1] is the current open (in-progress) candle; engine strips it.
+    # Rows [-2] is the signal bar (entry bar), [-3]/[-4] are the bounce bars.
+    n4 = 301
     base4 = np.linspace(90.0, 120.0, n4)
     closes4 = base4.copy()
-    ma25_est = float(np.mean(closes4[-25:]))
-    closes4[-3] = ma25_est * 1.010
-    closes4[-2] = ma25_est * 1.008
-    closes4[-1] = ma25_est * 1.020
+    ma25_est = float(np.mean(closes4[-26:-1]))  # MA25 of closed bars
+    closes4[-4] = ma25_est * 1.010
+    closes4[-3] = ma25_est * 1.008
+    closes4[-2] = ma25_est * 1.020   # entry bar (closed)
+    closes4[-1] = ma25_est * 1.021   # in-progress candle — stripped by engine
     opens4 = closes4.copy()
-    opens4[-1] = closes4[-1] * 0.997
+    opens4[-2] = closes4[-2] * 0.997   # entry bar is green
     highs4 = closes4 * 1.002
     lows4  = closes4 * 0.998
-    actual_ma25 = float(np.mean(closes4[-25:]))
-    lows4[-2] = actual_ma25 * 1.002
+    actual_ma25 = float(np.mean(closes4[-26:-1]))
+    lows4[-3] = actual_ma25 * 1.002   # touch zone in bar before entry
     idx4 = pd.date_range("2024-01-01", periods=n4, freq="4h", tz="UTC")
     df_4h = pd.DataFrame(
         {"open": opens4, "high": highs4, "low": lows4,
