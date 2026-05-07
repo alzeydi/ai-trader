@@ -54,8 +54,18 @@ def size_position(
     candidate: CandidateSignal,
     account: AccountState,
     veto: VetoResponse,
+    *,
+    market_max_qty: float | None = None,
 ) -> TradeOrder | None:
     """Convert a vetted candidate into a fully-specified order.
+
+    `market_max_qty` is the per-order MAX_QTY filter from
+    `exchange.markets[symbol]["limits"]["amount"]["max"]`. When provided and
+    our computed qty exceeds it, we silently clamp down — losing some of the
+    intended size on cheap pairs (e.g. STRK at ~$0.20) is much better than
+    eating a Binance -4005 "Quantity greater than max quantity." rejection
+    every cycle. None disables the clamp (used by backtest / unit tests
+    where there is no live markets cache).
 
     Returns `None` when the trade is too small to be profitable after fees
     (target distance < 3 × round-trip taker fees).
@@ -121,6 +131,14 @@ def size_position(
             return None
         if quantity > max_qty:
             quantity = max_qty
+
+    # Exchange per-order MAX_QTY (Binance -4005). Cheap perps (STRK, ZIL,
+    # 1000PEPE…) have caps in the 50k–1M contracts range; risk-USD-based
+    # sizing easily blows past them when sl_distance is small in absolute
+    # terms. Clamp here so the order never gets rejected — the only knock-on
+    # effect is a slightly under-sized position on those pairs.
+    if market_max_qty is not None and market_max_qty > 0 and quantity > market_max_qty:
+        quantity = market_max_qty
 
     # Exchange minimum notional (Binance -4164). If sizing landed below the
     # floor — typically because free margin is tiny — reject cleanly so the
