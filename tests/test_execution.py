@@ -300,6 +300,121 @@ def test_trader_run_cycle_paper_mode_records_trade(monkeypatch):
     assert "margin_usd" in kwargs and kwargs["margin_usd"] > 0
 
 
+def _stub_market_context(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "src.execution.trader.get_market_context",
+        lambda symbol, client: type("MC", (), {
+            "funding_rate": 0.0001,
+            "open_interest_delta_1h": None,
+            "liquidations_4h_usd": 0.0,
+            "btc_dominance": None,
+            "btc_1h_direction": None,
+        })(),
+    )
+    monkeypatch.setattr("src.execution.trader.append_decision", lambda *a, **k: None)
+
+
+def _make_trader(sf, engine, llm_client) -> Trader:
+    return Trader(
+        binance=MagicMock(),
+        engine=engine,
+        llm_client=llm_client,
+        executor=OrderExecutor(client=None, paper=True, session_factory=sf),
+        safety=SafetyMode(session_factory=sf),
+        notifier=None,
+        session_factory=sf,
+        equity_usd=1000.0,
+    )
+
+
+def test_btc_regime_blocks_a_long_without_self_trend_override(monkeypatch):
+    """A LONG under BTC=down with self_trend_override=False must be blocked."""
+    sf = make_session_factory()
+    cand = _candidate(side="long")
+    cand = cand.model_copy(update={"self_trend_override": False})
+    engine = _FakeEngine(cand)
+
+    llm_client = MagicMock()
+    _stub_market_context(monkeypatch)
+    monkeypatch.setattr(
+        "src.execution.trader.get_btc_regime", lambda client: "down",
+    )
+
+    trader = _make_trader(sf, engine, llm_client)
+    results = trader.run_cycle([cand.symbol])
+    assert results[0].accepted is False
+    assert results[0].reason == "btc_regime_down"
+    # The LLM must not have been consulted — gate is pre-veto.
+    llm_client.veto.assert_not_called()
+
+
+def test_btc_regime_lets_a_long_through_when_self_trend_override(monkeypatch):
+    """A LONG under BTC=down with self_trend_override=True must reach the LLM."""
+    sf = make_session_factory()
+    cand = _candidate(side="long").model_copy(update={"self_trend_override": True})
+    engine = _FakeEngine(cand)
+
+    llm_client = MagicMock()
+    llm_client.veto.return_value = VetoResponse(
+        decision="TAKE", confidence=0.85,
+        invalidation_signal="BTC reverses", reasoning="own trend",
+    )
+    _stub_market_context(monkeypatch)
+    monkeypatch.setattr(
+        "src.execution.trader.get_btc_regime", lambda client: "down",
+    )
+
+    trader = _make_trader(sf, engine, llm_client)
+    results = trader.run_cycle([cand.symbol])
+    assert results[0].accepted is True
+    llm_client.veto.assert_called_once()
+
+
+def test_btc_regime_lets_a_short_through_when_self_trend_override(monkeypatch):
+    """Mirror: A SHORT under BTC=up with self_trend_override=True is allowed."""
+    sf = make_session_factory()
+    cand = _candidate(side="short").model_copy(update={"self_trend_override": True})
+    engine = _FakeEngine(cand)
+
+    llm_client = MagicMock()
+    llm_client.veto.return_value = VetoResponse(
+        decision="TAKE", confidence=0.85,
+        invalidation_signal="BTC reverses", reasoning="own trend",
+    )
+    _stub_market_context(monkeypatch)
+    monkeypatch.setattr(
+        "src.execution.trader.get_btc_regime", lambda client: "up",
+    )
+
+    trader = _make_trader(sf, engine, llm_client)
+    results = trader.run_cycle([cand.symbol])
+    assert results[0].accepted is True
+    llm_client.veto.assert_called_once()
+
+
+def test_btc_regime_self_trend_override_only_for_type_a(monkeypatch):
+    """Override is Type A only; same flag on Type B must NOT bypass the gate."""
+    sf = make_session_factory()
+    base = _candidate(side="long")
+    cand = base.model_copy(update={
+        "entry_type": "B",
+        "self_trend_override": True,
+    })
+    engine = _FakeEngine(cand)
+
+    llm_client = MagicMock()
+    _stub_market_context(monkeypatch)
+    monkeypatch.setattr(
+        "src.execution.trader.get_btc_regime", lambda client: "down",
+    )
+
+    trader = _make_trader(sf, engine, llm_client)
+    results = trader.run_cycle([cand.symbol])
+    assert results[0].accepted is False
+    assert results[0].reason == "btc_regime_down"
+    llm_client.veto.assert_not_called()
+
+
 def test_trader_run_cycle_rejects_on_low_confidence(monkeypatch):
     sf = make_session_factory()
     cand = _candidate()

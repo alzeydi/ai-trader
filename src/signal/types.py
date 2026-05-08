@@ -14,7 +14,7 @@ class CandidateSignal(BaseModel):
     )
     symbol: str
     side: Literal["long", "short"]
-    entry_type: Literal["A", "B", "C", "D", "E"]
+    entry_type: Literal["A", "B", "C", "D", "E", "F", "G"]
     signal_strength: float = Field(ge=0.0, le=1.0)
     entry_price_ref: float
     atr_14: float
@@ -30,3 +30,9 @@ class CandidateSignal(BaseModel):
     # rather than from volatility noise. The ATR floor (min_stop_pct) still
     # applies as a last-resort guard.
     sl_price_hint: float | None = None
+    # When True, the symbol is in a self-driven trend matching `side` over
+    # the last N 30m bars (configured via `a_self_trend_bars`). Set by the
+    # signal engine for Type A only; consumed by the BTC-regime gate to
+    # let the trade through even when BTC's H1 regime is against side.
+    # Engine never sets this to True for other entry types.
+    self_trend_override: bool = False

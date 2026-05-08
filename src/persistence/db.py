@@ -323,6 +323,28 @@ def has_recent_type_e_decision(
     when the LLM vetoes the candidate — otherwise vetoed E's would burn fresh
     LLM calls every minute.
     """
+    return _has_recent_type_decision(session_factory, symbol, "E", cooldown_hours)
+
+
+def has_recent_type_g_decision(
+    session_factory: SessionFactory,
+    symbol: str,
+    cooldown_hours: int,
+) -> bool:
+    """Same purpose as has_recent_type_e_decision, but for Type G (mirror of E).
+
+    Strategy G also re-evaluates the in-progress H4 bar every loop tick, so
+    without per-symbol dedup the bot would re-fire every minute.
+    """
+    return _has_recent_type_decision(session_factory, symbol, "G", cooldown_hours)
+
+
+def _has_recent_type_decision(
+    session_factory: SessionFactory,
+    symbol: str,
+    entry_type: str,
+    cooldown_hours: int,
+) -> bool:
     if cooldown_hours <= 0:
         return False
     cutoff = datetime.now(tz=timezone.utc) - timedelta(hours=cooldown_hours)
@@ -330,7 +352,7 @@ def has_recent_type_e_decision(
         row = s.execute(
             select(AIDecision)
             .where(AIDecision.symbol == symbol)
-            .where(AIDecision.entry_type == "E")
+            .where(AIDecision.entry_type == entry_type)
             .where(AIDecision.created_at >= cutoff)
             .order_by(AIDecision.created_at.desc())
             .limit(1)

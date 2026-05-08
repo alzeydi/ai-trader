@@ -27,6 +27,7 @@ from src.persistence.db import (
     daily_realized_pnl,
     has_recent_losing_b_trade,
     has_recent_type_e_decision,
+    has_recent_type_g_decision,
     make_session_factory,
 )
 from src.risk.btc_regime import get_btc_regime, is_blocked as btc_regime_blocks
@@ -134,22 +135,55 @@ class Trader:
                 candidate=signal,
             )
 
+        # Same dedup for Type G (mirror of E): re-evaluates the live H4 bar
+        # every loop tick, so without this it would re-fire every cycle.
+        if signal.entry_type == "G" and has_recent_type_g_decision(
+            self.session_factory,
+            symbol,
+            settings.ma25_symbol_cooldown_hours,
+        ):
+            log.info("%s: Type G suppressed by 24h per-symbol cooldown", symbol)
+            return CycleResult(
+                symbol=symbol,
+                accepted=False,
+                reason="g_symbol_cooldown",
+                candidate=signal,
+            )
+
         # 1d. Global BTC regime gate. BTC up → longs only; BTC down → shorts
         # only; flat → both allowed. Fail-open on fetch errors (regime=None).
         # Runs BEFORE the LLM call so vetoed candidates don't burn tokens.
+        #
+        # Self-trend override (Type A only): when the symbol just printed
+        # `a_self_trend_bars` consecutive in-trend 30m candles, the gate is
+        # skipped. The hypothesis is that an alt moving on its own is more
+        # likely on a genuine independent trend than a BTC-correlated
+        # bounce. Both directions covered (A long under BTC=down with green
+        # 30m run; A short under BTC=up with red 30m run). Logged as a
+        # "surrogate decision" so we can measure WR of override-permitted
+        # A trades vs the population.
         if settings.btc_regime_enabled:
             regime = get_btc_regime(self.binance)
             if btc_regime_blocks(regime, signal.side):
-                log.info(
-                    "%s: %s suppressed by BTC regime gate (regime=%s)",
-                    symbol, signal.side, regime,
-                )
-                return CycleResult(
-                    symbol=symbol,
-                    accepted=False,
-                    reason=f"btc_regime_{regime}",
-                    candidate=signal,
-                )
+                if signal.entry_type == "A" and signal.self_trend_override:
+                    log.info(
+                        "%s: %s A_self_trend_override active — would have "
+                        "been blocked by btc_regime=%s, %d in-trend 30m "
+                        "candles let it through",
+                        symbol, signal.side, regime,
+                        int(settings.a_self_trend_bars),
+                    )
+                else:
+                    log.info(
+                        "%s: %s suppressed by BTC regime gate (regime=%s)",
+                        symbol, signal.side, regime,
+                    )
+                    return CycleResult(
+                        symbol=symbol,
+                        accepted=False,
+                        reason=f"btc_regime_{regime}",
+                        candidate=signal,
+                    )
 
         # 1c. Fast account pre-check — runs BEFORE market-context REST calls
         # and the LLM veto so we don't spend tokens or rate-limit budget when
