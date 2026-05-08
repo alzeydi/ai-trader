@@ -203,9 +203,14 @@ class TelegramNotifier:
         exit_ = _get(trade, "exit", _get(trade, "close_price"))
         exit_ = float(exit_ or 0.0)
         qty = float(_get(trade, "quantity", _get(trade, "qty", 0.0)) or 0.0)
-        gross = float(_get(trade, "pnl_usd", 0.0) or 0.0)
+        # `pnl_usd` in the trades table is already NET of round-trip taker
+        # fees (see execution/orders.py — both paper and live close paths
+        # store `gross_pnl - fees`). Reconstruct gross by adding the fees
+        # back; otherwise the notification double-deducts and ROI is
+        # systematically understated by the fee fraction.
+        net = float(_get(trade, "pnl_usd", 0.0) or 0.0)
         fees = float(fees_usd if fees_usd is not None else (_get(trade, "fees", 0.0) or 0.0))
-        net = gross - fees
+        gross = net + fees
         reason = _get(trade, "close_reason", "")
         leverage = float(_get(trade, "leverage", 1) or 1)
 
