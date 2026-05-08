@@ -42,6 +42,178 @@ from src.persistence.db import (
 )
 
 # ---------------------------------------------------------------------------
+# Glossary — простые объяснения торговых терминов на русском.
+# Появляются при наведении курсора на «?» рядом с заголовками и метриками.
+# ---------------------------------------------------------------------------
+
+HELP = {
+    # ── Equity & doходность ────────────────────────────────────────────────
+    "equity": (
+        "Текущий баланс счёта в USDT. Включает реализованную прибыль и "
+        "примерную нереализованную (по открытым позициям)."
+    ),
+    "realized_pnl": (
+        "Зафиксированная прибыль или убыток по сделкам, которые уже закрылись. "
+        "Эти деньги уже на балансе."
+    ),
+    "unrealized_pnl": (
+        "Прибыль или убыток по открытым позициям, если бы их закрыли по "
+        "текущей рыночной цене. Может быстро меняться."
+    ),
+    "fees": (
+        "Сумма комиссий биржи (taker/maker) за период. Учитываются при "
+        "расчёте чистой PnL."
+    ),
+    # ── Качество стратегии ─────────────────────────────────────────────────
+    "sharpe": (
+        "Отношение средней доходности к её разбросу (волатильности). Чем "
+        "выше — тем стабильнее зарабатывает стратегия. >1 — хорошо, >2 — "
+        "отлично."
+    ),
+    "sortino": (
+        "Похоже на Sharpe, но штрафует только за убыточную волатильность "
+        "(падения), а не за резкий рост. Лучше отражает «качество» прибыли."
+    ),
+    "max_drawdown": (
+        "Самое глубокое падение equity от пика до дна за всю историю, в %. "
+        "Показывает «худший сценарий» из тех, что уже случались."
+    ),
+    "win_rate": "Процент закрытых сделок, которые завершились в плюс.",
+    "avg_win": "Средний размер прибыльной сделки в USDT.",
+    "avg_loss": "Средний размер убыточной сделки в USDT (со знаком минус).",
+    "profit_factor": (
+        "Сумма всех прибылей делённая на сумму всех убытков. >1 — система "
+        "зарабатывает в целом; >1.5 — стабильно прибыльная."
+    ),
+    # ── Дневная активность ─────────────────────────────────────────────────
+    "trades_closed": "Сколько сделок закрылось за сегодня.",
+    "trades_opened": "Сколько новых сделок открылось за сегодня.",
+    "open_now": "Сколько позиций сейчас держим открытыми.",
+    "best_worst": "Самая удачная и самая провальная сделка за день.",
+    # ── AI veto ────────────────────────────────────────────────────────────
+    "ai_decisions": (
+        "Сколько раз AI-цензор (Claude) выносил вердикт TAKE/SKIP по "
+        "кандидатам в сделки за день."
+    ),
+    "ai_accepted": (
+        "Сколько кандидатов получили вердикт TAKE и были взяты в работу. "
+        "Процент = TAKE / общее число решений."
+    ),
+    "ai_cost": (
+        "Сколько $ потрачено на запросы к Claude API за день. Каждый "
+        "вердикт — это один запрос."
+    ),
+    "ai_decision": (
+        "Вердикт AI: TAKE — открываем сделку, SKIP — пропускаем "
+        "(AI считает сетап слабым)."
+    ),
+    "ai_confidence": (
+        "Уверенность AI в вердикте, 0..1. Влияет на размер позиции — "
+        "чем выше уверенность, тем больше риск на сделку."
+    ),
+    "ai_took": (
+        "Реально ли открыли позицию после вердикта. TAKE может не дойти до "
+        "ордера (нет лимитов, отказ риск-менеджера, сбой биржи)."
+    ),
+    # ── Поля сделок ────────────────────────────────────────────────────────
+    "side": "Сторона: long — играем на рост, short — играем на падение.",
+    "entry_type": (
+        "Стратегия, по которой открыта сделка:\n"
+        "A — отскок от EMA50 на 1h с разворотом RSI;\n"
+        "B — фейд экстремального выброса (counter-trend);\n"
+        "C — пробой свинга на 1h с подтверждением;\n"
+        "D — пробой 1h-диапазона по объёмам;\n"
+        "E — отскок цены от MA25 на 4h."
+    ),
+    "leverage": "Плечо. Размер позиции / залог. Чем больше — тем выше риск.",
+    "entry_price": "Цена, по которой открыли позицию.",
+    "close_price": "Цена, по которой позицию закрыли.",
+    "quantity": "Размер позиции в монетах базового актива.",
+    "pnl_usd": "Прибыль или убыток по сделке в USDT (за вычетом комиссий).",
+    "pnl_pct": "Прибыль или убыток в % от начального риска (R-multiple).",
+    "close_reason": (
+        "Почему закрылась сделка: TP — тейк-профит, SL — стоп-лосс, "
+        "TIMEOUT — закрыта по времени, MANUAL — вручную."
+    ),
+    "stop_loss": (
+        "Цена, на которой автоматически закроем сделку с убытком. "
+        "Защита от больших потерь."
+    ),
+    "take_profit": (
+        "Цена, на которой автоматически закроем сделку с прибылью."
+    ),
+    "risk_usd": (
+        "Сколько $ теряем, если сделка дойдёт до стоп-лосса. Это «1R»."
+    ),
+    "paper": (
+        "Paper-режим — сделка симулируется локально, реального ордера на "
+        "бирже нет. Используется для тестирования."
+    ),
+}
+
+
+def _col_help(name: str, key: str) -> "st.column_config.Column":
+    """st.column_config.Column wrapper that stays compatible across the
+    wider Streamlit versions we see in production (the generic Column
+    accepts help=, no need to pick TextColumn vs NumberColumn)."""
+    return st.column_config.Column(name, help=HELP.get(key, ""))
+
+
+# Column config dicts reused across pages. Keys map to *display* column
+# names; values are configs with hover help. Columns not listed here render
+# with their default (untooltipped) header — that's fine.
+TRADES_COL_CONFIG = {
+    "side":           _col_help("side", "side"),
+    "type":           _col_help("type", "entry_type"),
+    "entry":          _col_help("entry", "entry_price"),
+    "close_price":    _col_help("close_price", "close_price"),
+    "quantity":       _col_help("quantity", "quantity"),
+    "leverage":       _col_help("leverage", "leverage"),
+    "pnl_usd":        _col_help("pnl_usd", "pnl_usd"),
+    "pnl_pct":        _col_help("pnl_pct", "pnl_pct"),
+    "fees":           _col_help("fees", "fees"),
+    "close_reason":   _col_help("close_reason", "close_reason"),
+    "llm_confidence": _col_help("llm_confidence", "ai_confidence"),
+}
+
+POSITIONS_COL_CONFIG = {
+    "side":           _col_help("side", "side"),
+    "type":           _col_help("type", "entry_type"),
+    "quantity":       _col_help("quantity", "quantity"),
+    "entry_price":    _col_help("entry_price", "entry_price"),
+    "leverage":       _col_help("leverage", "leverage"),
+    "stop_loss":      _col_help("stop_loss", "stop_loss"),
+    "take_profit":    _col_help("take_profit", "take_profit"),
+    "risk_usd":       _col_help("risk_usd", "risk_usd"),
+    "llm_confidence": _col_help("llm_confidence", "ai_confidence"),
+    "paper":          _col_help("paper", "paper"),
+}
+
+DECISIONS_COL_CONFIG = {
+    "side":       _col_help("side", "side"),
+    "decision":   _col_help("decision", "ai_decision"),
+    "confidence": _col_help("confidence", "ai_confidence"),
+    "took":       _col_help("took", "ai_took"),
+    "cost_usd":   _col_help("cost_usd", "ai_cost"),
+}
+
+BY_STRATEGY_COL_CONFIG = {
+    "type":         _col_help("type", "entry_type"),
+    "closed":       _col_help("closed", "trades_closed"),
+    "pnl_usd":      _col_help("pnl_usd", "pnl_usd"),
+    "win_rate_%":   _col_help("win_rate_%", "win_rate"),
+    "avg_pnl_pct":  _col_help("avg_pnl_pct", "pnl_pct"),
+}
+
+BY_SIDE_COL_CONFIG = {
+    "side":       _col_help("side", "side"),
+    "closed":     _col_help("closed", "trades_closed"),
+    "pnl_usd":    _col_help("pnl_usd", "pnl_usd"),
+    "win_rate_%": _col_help("win_rate_%", "win_rate"),
+}
+
+
+# ---------------------------------------------------------------------------
 # Data loaders
 # ---------------------------------------------------------------------------
 
@@ -271,15 +443,31 @@ def _render_btc_regime_banner() -> None:
         f"{color} BTC regime",
         regime.upper(),
         f"slope {slope:+.3f}%  ·  price {price_dist:+.2f}% off EMA",
+        help=(
+            "Глобальный фильтр направления: смотрит, куда движется BTC. "
+            "Если растёт — разрешены только лонги по альтам. Если падает — "
+            "только шорты. Если боковик — обе стороны разрешены. Сделан, "
+            "чтобы не торговать против рынка."
+        ),
     )
     c2.metric(
         "Thresholds",
         f"slope ±{slope_thr:.2f}%/{lookback}h",
         f"price ±{price_thr:.2f}%",
         delta_color="off",
+        help=(
+            "Пороги для двух сигналов. Slope — насколько % должна сдвинуться "
+            "EMA50 за окно lookback, чтобы считать тренд активным. Price — "
+            "насколько % текущая цена должна отойти от EMA, чтобы зафиксировать "
+            "регим (на случай если EMA медленно догоняет резкое движение)."
+        ),
     )
     c3.metric("Gate verdict", allowed, f"{blocked} · trigger: {trigger}",
-              delta_color="off")
+              delta_color="off",
+              help=(
+                  "Что разрешено открывать прямо сейчас. Trigger показывает, "
+                  "какой из двух сигналов сработал: slope, price или оба."
+              ))
 
     # Простое объяснение по-русски — что увидел гейт и почему такой вердикт.
     price_now = snap["price_now"]
@@ -349,17 +537,19 @@ def page_overview() -> None:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Equity (USDT)", f"{eq_indexed.iloc[-1]:,.2f}",
-              f"{(eq_indexed.iloc[-1] - start_val):+,.2f}")
-    c2.metric("Sharpe", f"{sharpe:.2f}")
-    c3.metric("Sortino", f"{sortino:.2f}")
-    c4.metric("Max Drawdown", f"{mdd:.2f}%")
+              f"{(eq_indexed.iloc[-1] - start_val):+,.2f}",
+              help=HELP["equity"])
+    c2.metric("Sharpe", f"{sharpe:.2f}", help=HELP["sharpe"])
+    c3.metric("Sortino", f"{sortino:.2f}", help=HELP["sortino"])
+    c4.metric("Max Drawdown", f"{mdd:.2f}%", help=HELP["max_drawdown"])
 
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("Win rate", f"{stats['win_rate']:.1f}%")
-    c6.metric("Avg win", f"{stats['avg_win']:+.2f}")
-    c7.metric("Avg loss", f"{stats['avg_loss']:+.2f}")
+    c5.metric("Win rate", f"{stats['win_rate']:.1f}%", help=HELP["win_rate"])
+    c6.metric("Avg win", f"{stats['avg_win']:+.2f}", help=HELP["avg_win"])
+    c7.metric("Avg loss", f"{stats['avg_loss']:+.2f}", help=HELP["avg_loss"])
     pf = stats["profit_factor"]
-    c8.metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}")
+    c8.metric("Profit factor", "∞" if pf == float("inf") else f"{pf:.2f}",
+              help=HELP["profit_factor"])
 
     st.subheader("Equity curve vs BTC buy & hold")
     chart_df = pd.DataFrame({"strategy": eq_indexed})
@@ -389,13 +579,17 @@ def page_daily_report() -> None:
         "Equity (USDT)",
         f"{eq_end:,.2f}" if eq_end is not None else "—",
         f"{eq_change:+,.2f}" if eq_change is not None else None,
+        help=HELP["equity"],
     )
-    c2.metric("Realised PnL", f"{report.realized_pnl_usd:+,.2f}")
-    c3.metric("Trades closed", str(report.n_closed))
+    c2.metric("Realised PnL", f"{report.realized_pnl_usd:+,.2f}",
+              help=HELP["realized_pnl"])
+    c3.metric("Trades closed", str(report.n_closed),
+              help=HELP["trades_closed"])
     c4.metric(
         "Win rate",
         f"{report.win_rate:.0f}%" if (report.wins + report.losses) else "—",
         f"{report.wins}W/{report.losses}L",
+        help=HELP["win_rate"],
     )
 
     c5, c6, c7, c8 = st.columns(4)
@@ -403,17 +597,19 @@ def page_daily_report() -> None:
         "Trades opened",
         str(report.n_opened),
         f"{report.n_long_opened} long / {report.n_short_opened} short",
+        help=HELP["trades_opened"],
     )
-    c6.metric("Open now", str(report.n_open_now))
-    c7.metric("Fees today", f"{report.fees_usd:,.2f}")
+    c6.metric("Open now", str(report.n_open_now), help=HELP["open_now"])
+    c7.metric("Fees today", f"{report.fees_usd:,.2f}", help=HELP["fees"])
     c8.metric(
         "Unrealised PnL",
         f"{report.unrealized_pnl_usd:+,.2f}"
         if report.unrealized_pnl_usd is not None else "—",
+        help=HELP["unrealized_pnl"],
     )
 
     if report.n_closed:
-        st.subheader("Best / worst")
+        st.subheader("Best / worst", help=HELP["best_worst"])
         cols = st.columns(2)
         cols[0].success(
             f"🏆 `{report.best_symbol}`  {report.best_trade_usd:+,.2f} USDT"
@@ -438,7 +634,8 @@ def page_daily_report() -> None:
             }
             for s in report.by_strategy
         ]
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True,
+                     column_config=BY_STRATEGY_COL_CONFIG)
     else:
         st.info("No trades opened or closed today yet.")
 
@@ -455,17 +652,26 @@ def page_daily_report() -> None:
             }
             for ss in report.by_side
         ]
-        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True,
+                     column_config=BY_SIDE_COL_CONFIG)
 
-    st.subheader("AI veto")
+    st.subheader(
+        "AI veto",
+        help=(
+            "AI-цензор Claude — второй фильтр после рулевого движка. "
+            "Видит кандидата и решает TAKE (берём) или SKIP (пропускаем)."
+        ),
+    )
     a1, a2, a3 = st.columns(3)
-    a1.metric("Decisions", str(report.ai_decisions_total))
+    a1.metric("Decisions", str(report.ai_decisions_total),
+              help=HELP["ai_decisions"])
     a2.metric(
         "Accepted",
         str(report.ai_decisions_accepted),
         f"{report.acceptance_rate:.0f}%" if report.ai_decisions_total else None,
+        help=HELP["ai_accepted"],
     )
-    a3.metric("LLM cost", f"${report.ai_cost_usd:,.4f}")
+    a3.metric("LLM cost", f"${report.ai_cost_usd:,.4f}", help=HELP["ai_cost"])
 
     with st.expander("Telegram preview"):
         st.code(format_daily_report_telegram(report))
@@ -514,7 +720,8 @@ def page_trades() -> None:
         ] if c in df.columns
     ]
     st.dataframe(df[cols].sort_values("opened_at", ascending=False),
-                 width="stretch", hide_index=True)
+                 width="stretch", hide_index=True,
+                 column_config=TRADES_COL_CONFIG)
 
 
 def page_ai_decisions() -> None:
@@ -558,7 +765,8 @@ def page_ai_decisions() -> None:
             "took", "cost_usd", "duration_ms", "model",
         ] if c in view.columns
     ]
-    st.dataframe(view[summary_cols], width="stretch", hide_index=True)
+    st.dataframe(view[summary_cols], width="stretch", hide_index=True,
+                 column_config=DECISIONS_COL_CONFIG)
 
     st.subheader("Inspect raw")
     if not view.empty:
@@ -602,7 +810,8 @@ def page_positions() -> None:
             "llm_confidence", "paper", "opened_at",
         ] if c in df.columns
     ]
-    st.dataframe(df[cols], width="stretch", hide_index=True)
+    st.dataframe(df[cols], width="stretch", hide_index=True,
+                 column_config=POSITIONS_COL_CONFIG)
 
 
 # ---------------------------------------------------------------------------
