@@ -453,3 +453,120 @@ def test_trader_run_cycle_rejects_on_low_confidence(monkeypatch):
     assert results[0].accepted is False
     assert "Low confidence" in results[0].reason
     assert count_open_trades(sf) == 0
+
+
+# ---------------------------------------------------------------------------
+# OrderExecutor — live mode: SL/TP must use exchange-reported filled qty
+# ---------------------------------------------------------------------------
+
+def test_live_open_sl_tp_use_actual_filled_qty(monkeypatch):
+    """Binance LOT_SIZE rounding can shave the entry qty below the requested
+    amount. SL/TP must cover the actual filled qty, not the planned one,
+    otherwise part of the position sits unhedged.
+    """
+    sf = make_session_factory()
+    requested_qty = 0.1
+    actual_filled = 0.097  # exchange rounded down
+
+    create_order_calls: list[dict] = []
+
+    def fake_create_order(symbol, otype, side, qty, price, params):
+        create_order_calls.append(
+            {"type": otype, "side": side, "qty": qty, "params": dict(params or {})}
+        )
+        if otype == "market" and not (params or {}).get("reduceOnly"):
+            return {"id": "entry-1", "filled": actual_filled, "amount": actual_filled,
+                    "average": 2000.0}
+        return {"id": f"{otype.lower()}-1"}
+
+    ex = MagicMock()
+    ex.create_order.side_effect = fake_create_order
+    ex.set_leverage.return_value = None
+    ex.fetch_balance.return_value = {"USDT": {"free": 1_000_000.0}}
+    ex.price_to_precision.side_effect = lambda _s, p: f"{p:.4f}"
+
+    client = MagicMock()
+    client.exchange = ex
+
+    # Bypass the bracket-order cleanup paths — they hit live endpoints.
+    monkeypatch.setattr(
+        "src.execution.orders.cancel_symbol_conditionals",
+        lambda *a, **kw: 0,
+    )
+
+    executor = OrderExecutor(client=client, paper=False, session_factory=sf)
+    result = executor.open_position(_order())
+
+    assert result.success, result.reason
+
+    # Three create_order calls: entry (market), SL (STOP_MARKET), TP (TAKE_PROFIT_MARKET).
+    by_type = {c["type"]: c for c in create_order_calls}
+    assert "market" in by_type
+    assert by_type["market"]["qty"] == requested_qty  # entry uses planned qty
+
+    assert "STOP_MARKET" in by_type
+    assert by_type["STOP_MARKET"]["qty"] == actual_filled, (
+        "SL must be sized to actual filled qty, not the requested one"
+    )
+    assert by_type["STOP_MARKET"]["params"].get("reduceOnly") is True
+
+    assert "TAKE_PROFIT_MARKET" in by_type
+    assert by_type["TAKE_PROFIT_MARKET"]["qty"] == actual_filled, (
+        "TP must be sized to actual filled qty, not the requested one"
+    )
+
+    # And the recorded trade row must reflect the actual filled qty.
+    open_trades = list_open_trades(sf)
+    assert len(open_trades) == 1
+    assert open_trades[0].quantity == actual_filled
+
+
+def test_live_open_rollback_on_sl_failure_uses_actual_filled_qty(monkeypatch):
+    """If SL placement fails after a partial fill, rollback must close the
+    actual filled qty (reduceOnly), not the planned qty.
+    """
+    sf = make_session_factory()
+    actual_filled = 0.097
+
+    create_order_calls: list[dict] = []
+
+    def fake_create_order(symbol, otype, side, qty, price, params):
+        create_order_calls.append(
+            {"type": otype, "side": side, "qty": qty, "params": dict(params or {})}
+        )
+        if otype == "market" and not (params or {}).get("reduceOnly"):
+            return {"id": "entry-1", "filled": actual_filled, "amount": actual_filled,
+                    "average": 2000.0}
+        if otype == "STOP_MARKET":
+            raise RuntimeError("simulated -2021: would immediately trigger")
+        # Rollback market reduceOnly:
+        return {"id": "rollback-1"}
+
+    ex = MagicMock()
+    ex.create_order.side_effect = fake_create_order
+    ex.set_leverage.return_value = None
+    ex.fetch_balance.return_value = {"USDT": {"free": 1_000_000.0}}
+    ex.price_to_precision.side_effect = lambda _s, p: f"{p:.4f}"
+
+    client = MagicMock()
+    client.exchange = ex
+
+    monkeypatch.setattr(
+        "src.execution.orders.cancel_symbol_conditionals",
+        lambda *a, **kw: 0,
+    )
+
+    executor = OrderExecutor(client=client, paper=False, session_factory=sf)
+    result = executor.open_position(_order())
+
+    assert result.success is False
+    assert "sl_failed_rolled_back" in (result.reason or "")
+
+    rollback = [
+        c for c in create_order_calls
+        if c["type"] == "market" and c["params"].get("reduceOnly")
+    ]
+    assert len(rollback) == 1
+    assert rollback[0]["qty"] == actual_filled, (
+        "Rollback must close the actual filled qty, not the planned qty"
+    )
