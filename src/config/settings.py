@@ -183,6 +183,11 @@ class Settings(BaseSettings):
     # live trade statistics. Tune via MA25_RISK_PCT env var once you have
     # ≥30 closed trades.
     risk_per_trade_type_e: float = 0.015  # 1.5 % of equity
+    # Type F (BoS short) and G (MA25 breakdown) are the bearish counterparts
+    # of D-style structural shorts and E (MA25 bounce). Both ship at the same
+    # conviction tier as E until live statistics tell us otherwise.
+    risk_per_trade_type_f: float = 0.015  # 1.5 % of equity
+    risk_per_trade_type_g: float = 0.015  # 1.5 % of equity
 
     # ----- MA25 Bounce (Strategy X) -----
     # MA25 must have risen by at least this many % over the 12-bar look-back
@@ -207,6 +212,37 @@ class Settings(BaseSettings):
     # 4h bar. Spec §5: "symbol fires at 04:34 → cooldown starts → 24h silence
     # for THIS symbol regardless of how its forming bar evolves".
     ma25_symbol_cooldown_hours: int = 24
+
+    # ----- MA25 Breakdown (Strategy G — mirror of E) -----
+    # Bearish twin of E: MA25 falling (slope ≤ −0.5 %), MA25 < MA99,
+    # ≥70 % of the last 10 closed bars closed BELOW MA25, current bar is
+    # red, running close is below MA25 by ≤ 4 %, and the upper wick of the
+    # last 3 bars touched the MA25 zone from below.
+    ma25_breakdown_slope_max_pct: float = -0.5
+    ma25_breakdown_prior_below_min: float = 0.7
+    ma25_breakdown_pct_below_max: float = 4.0
+    ma25_breakdown_touch_max_pct: float = 0.005   # high within 0.5 % under MA25
+    ma25_breakdown_touch_min_pct: float = 0.03    # not more than 3 % above
+
+    # ----- Type F: Break-of-Structure short -----
+    # 1h structural short. Looks back `f_swing_lookback_bars` closed 1h
+    # bars to locate the lowest low (swing low). Between that bar and the
+    # current bar we look for the highest high (the lower-high retest).
+    # Triggers when:
+    #   * current 1h close < swing_low (BoS confirmed)
+    #   * the lower-high formed within `f_max_lower_high_age` bars (fresh)
+    #   * 15m volume on the breakdown ≥ `f_min_vol_ratio` × 20-bar mean
+    #   * close has not run more than `f_max_excess_pct` past swing_low
+    # 4h-bias gating mirrors B's `b_htf_extension_pct`: in a bullish 4h
+    # stack, F is blocked when close_4h sits more than this fraction
+    # ABOVE 4h-EMA200 (mid-trend pump territory). neutral / bearish 4h
+    # are always allowed; bullish-but-near-EMA200 (distribution zone) is
+    # allowed too.
+    f_swing_lookback_bars: int = 20
+    f_max_lower_high_age: int = 6
+    f_min_vol_ratio: float = 1.2
+    f_max_excess_pct: float = 0.02
+    f_htf_extension_pct: float = 0.05
 
     # ----- Global BTC regime gate -----
     # Hard pre-veto filter: blocks longs when BTC is falling and shorts when

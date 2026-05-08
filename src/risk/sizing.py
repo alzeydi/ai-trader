@@ -51,6 +51,8 @@ _RISK_BY_TYPE: dict[str, str] = {
     "C": "risk_per_trade_type_c",
     "D": "risk_per_trade_type_d",
     "E": "risk_per_trade_type_e",
+    "F": "risk_per_trade_type_f",
+    "G": "risk_per_trade_type_g",
 }
 
 
@@ -113,12 +115,17 @@ def size_position(
     if sl_floor_active:
         sl_distance = min_stop_distance
 
-    # Type E: SL is structural (bounce_low) and can be 4–8 % away from entry.
-    # Deriving TP from sl_distance × R:R ratio would push it 8–16 % — unreachable
-    # on a typical 4h bounce. Instead, anchor TP to the 4h ATR (stored in
-    # atr_14 for E), which reflects actual 4h volatility regardless of how far
-    # bounce_low happens to sit. SL stays structural; only TP changes.
-    if candidate.entry_type == "E" and candidate.sl_price_hint is not None and atr > 0:
+    # Types E and G: SL is structural (bounce_low / bounce_high) and can sit
+    # 4–8 % away from entry. Deriving TP from sl_distance × R:R ratio would
+    # push it 8–16 % — unreachable on a typical 4h bounce/breakdown.
+    # Instead, anchor TP to the 4h ATR (stored in atr_14 for E and G), which
+    # reflects actual 4h volatility regardless of how far the structural
+    # reference happens to sit. SL stays structural; only TP changes.
+    if (
+        candidate.entry_type in ("E", "G")
+        and candidate.sl_price_hint is not None
+        and atr > 0
+    ):
         tp_distance = atr * settings.atr_take_multiplier
     else:
         tp_distance = sl_distance * (settings.atr_take_multiplier / settings.atr_stop_multiplier)

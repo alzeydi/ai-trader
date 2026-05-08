@@ -22,7 +22,9 @@ import pandas as pd
 from src.config import settings
 from src.data.binance_client import BinanceClient
 from src.data.indicators import atr14, ema, macd, rsi14, swing_high_low
+from src.signal.bos_short import detect_bos_short
 from src.signal.ma25_bounce import detect_ma25_bounce
+from src.signal.ma25_breakdown import detect_ma25_breakdown
 from src.signal.types import CandidateSignal
 
 log = logging.getLogger(__name__)
@@ -68,6 +70,34 @@ def _score_e(slope_pct: float, prior_above: float, pct_above: float) -> float:
     # Entry closer to MA25 → fresher signal, less chasing.
     fresh = max(0.0, 1.0 - pct_above / 4.0) * 0.25
     return round(min(slope + ctx + fresh, 0.99), 2)
+
+
+def _score_g(slope_pct: float, prior_below: float, pct_below: float) -> float:
+    """Score Type G MA25-breakdown candidates (mirror of _score_e).
+
+    slope_pct:   MA25 fall over 12-bar window (%, negative). We score on |slope|.
+    prior_below: fraction of 10 prior bars closed below MA25 (floor 0.7).
+    pct_below:   how far current close sits below MA25 (0–4 %). Lower = fresher.
+    """
+    slope = min(max(abs(slope_pct) - 0.5, 0.0) / 2.5, 1.0) * 0.40
+    ctx   = min((prior_below - 0.7) / 0.3, 1.0) * 0.35
+    fresh = max(0.0, 1.0 - pct_below / 4.0) * 0.25
+    return round(min(slope + ctx + fresh, 0.99), 2)
+
+
+def _score_f(vol_ratio: float, excess_pct: float, lh_age: int, max_age: int) -> float:
+    """Score Type F (BoS short) candidates.
+
+    vol_ratio: 15m volume / 20-bar mean. Higher = more conviction on the break.
+    excess_pct: how far the breakdown bar closed past swing_low (relative).
+        Smaller = fresher entry.
+    lh_age: bars elapsed since the lower-high printed (1 = last closed bar).
+        Smaller = fresher retest.
+    """
+    volume = min(max(vol_ratio - 1.0, 0.0) / 1.5, 1.0) * 0.40
+    fresh_break = max(0.0, 1.0 - excess_pct / 0.02) * 0.30
+    fresh_lh = max(0.0, 1.0 - (lh_age - 1) / max(1, max_age - 1)) * 0.30
+    return round(min(volume + fresh_break + fresh_lh, 0.99), 2)
 
 
 def _score_d(vol_ratio: float, excess_pct: float, close_position: float) -> float:
@@ -171,6 +201,13 @@ class SignalEngine:
         # ── 4h trend bias ─────────────────────────────────────────────────
         bullish = (close_4h > float(ema50_4h) > float(ema200_4h))
         bearish = (close_4h < float(ema50_4h) < float(ema200_4h))
+        # HTF extension vs 4h-EMA200. Used by Type B (counter-trend gate) and
+        # Type F (BoS short, distribution-zone gate). Computed here so both
+        # blocks see the same value.
+        htf_ext = (
+            (close_4h - float(ema200_4h)) / float(ema200_4h)
+            if float(ema200_4h) > 0 else 0.0
+        )
 
         # ── shared reversal conditions (15m) ──────────────────────────────
         rsi_up   = bool(rsi_now > rsi_prev) and bool(rsi_prev < 45)
@@ -360,14 +397,97 @@ class SignalEngine:
                 )
 
         # ════════════════════════════════════════════════════════════════════
+        # TYPE G — MA25 Confirmed Breakdown (bearish mirror of E)
+        #
+        # Pure 4h structural short. Fires when MA25 is falling, MA25 < MA99,
+        # most recent prior bars closed BELOW MA25, current bar is red and
+        # closed below MA25 with the upper-wick of the last 3 bars touching
+        # the MA25 zone from below. The local high is the natural stop.
+        # ════════════════════════════════════════════════════════════════════
+        g_sig = detect_ma25_breakdown(symbol, df_4h)
+        if g_sig is not None:
+            entry_g = g_sig["entry_price"]
+            ma25_g  = g_sig["ma25"]
+            pct_below_g = (ma25_g - entry_g) / ma25_g * 100.0 if ma25_g > 0 else 0.0
+            strength_g = _score_g(
+                slope_pct=g_sig["slope_pct"],
+                prior_below=g_sig["prior_below"],
+                pct_below=pct_below_g,
+            )
+            if strength_g >= 0.25:
+                log.info(
+                    "%s: Type G MA25-breakdown SHORT "
+                    "slope=%.2f%% prior_below=%.2f pct_below=%.2f%% "
+                    "bounce_high=%.5f strength=%.2f",
+                    symbol, g_sig["slope_pct"], g_sig["prior_below"],
+                    pct_below_g, g_sig["bounce_high"], strength_g,
+                )
+                return CandidateSignal(
+                    timestamp=now, symbol=symbol, side="short",
+                    entry_type="G", signal_strength=strength_g,
+                    entry_price_ref=entry_g,
+                    atr_14=atr_4h_val,        # 4h ATR: context, not used for SL
+                    atr_14_1h=None,
+                    swing_high_1h=float(g_sig["bounce_high"]),
+                    swing_low_1h=sl_ref,
+                    sl_price_hint=float(g_sig["bounce_high"]),  # structural stop
+                )
+
+        # ════════════════════════════════════════════════════════════════════
+        # TYPE F — Break-of-Structure short (1h structural, with-short-trend)
+        #
+        # Fills the early-downtrend gap left by A and D. A needs the 4h to
+        # already be bearish (close < EMA50 < EMA200) and D needs an
+        # additional N-bar low break — both wait for the trend to confirm.
+        # F triggers as soon as the 1h structure breaks: a fresh swing low
+        # was printed, price made a lower-high retest, then the next 1h
+        # close closes below the swing low. Allowed in neutral and bearish
+        # 4h unconditionally; allowed in bullish 4h only when close_4h is
+        # not more than `f_htf_extension_pct` ABOVE 4h-EMA200 — blocks
+        # mid-trend pump fades while preserving the canonical "distribution
+        # zone" early-reversal short.
+        # ════════════════════════════════════════════════════════════════════
+        if not bullish or htf_ext <= float(settings.f_htf_extension_pct):
+            f_sig = detect_bos_short(symbol, df_1h, vol_ratio_15m=vol_ratio)
+            if f_sig is not None:
+                strength_f = _score_f(
+                    vol_ratio=f_sig["vol_ratio"],
+                    excess_pct=f_sig["excess_pct"],
+                    lh_age=f_sig["bars_since_lh"],
+                    max_age=int(settings.f_max_lower_high_age),
+                )
+                if strength_f >= 0.25:
+                    log.info(
+                        "%s: Type F BoS SHORT entry=%.5f swing_low=%.5f LH=%.5f "
+                        "excess=%.3f%% age=%d vol=%.2fx strength=%.2f",
+                        symbol, f_sig["entry_price"], f_sig["swing_low"],
+                        f_sig["lower_high"], f_sig["excess_pct"] * 100,
+                        f_sig["bars_since_lh"], f_sig["vol_ratio"], strength_f,
+                    )
+                    return CandidateSignal(
+                        timestamp=now, symbol=symbol, side="short",
+                        entry_type="F", signal_strength=strength_f,
+                        entry_price_ref=float(f_sig["entry_price"]),
+                        atr_14=atr_val,
+                        atr_14_1h=atr_1h_val,
+                        swing_high_1h=float(f_sig["lower_high"]),
+                        swing_low_1h=float(f_sig["swing_low"]),
+                        sl_price_hint=float(f_sig["lower_high"]),  # structural stop
+                    )
+        elif bullish:
+            log.debug(
+                "%s: Type F SHORT skipped, 4h bullish + close %.2f%% above "
+                "EMA200 > %.2f%%",
+                symbol, htf_ext * 100, float(settings.f_htf_extension_pct) * 100,
+            )
+
+        # ════════════════════════════════════════════════════════════════════
         # TYPE B — counter-trend extreme
         # ════════════════════════════════════════════════════════════════════
         hist_delta_15 = float(hist_15.iloc[-1]) - float(hist_15.iloc[-2])
         b_block = float(settings.b_trend_block_pct)
         b_htf = float(settings.b_htf_extension_pct)
-        # HTF extension vs 4h-EMA200. >0 means price is above the 200ema
-        # (uptrend territory); <0 means below (downtrend territory).
-        htf_ext = (close_4h - float(ema200_4h)) / float(ema200_4h) if float(ema200_4h) > 0 else 0.0
+        # `htf_ext` is computed in the shared section above (used by Type F too).
 
         if float(rsi_4h) > 75 and rsi_down:
             # Refuse to short into a 1h that has been climbing — the most

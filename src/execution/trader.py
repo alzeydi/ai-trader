@@ -27,6 +27,7 @@ from src.persistence.db import (
     daily_realized_pnl,
     has_recent_losing_b_trade,
     has_recent_type_e_decision,
+    has_recent_type_g_decision,
     make_session_factory,
 )
 from src.risk.btc_regime import get_btc_regime, is_blocked as btc_regime_blocks
@@ -131,6 +132,21 @@ class Trader:
                 symbol=symbol,
                 accepted=False,
                 reason="e_symbol_cooldown",
+                candidate=signal,
+            )
+
+        # Same dedup for Type G (mirror of E): re-evaluates the live H4 bar
+        # every loop tick, so without this it would re-fire every cycle.
+        if signal.entry_type == "G" and has_recent_type_g_decision(
+            self.session_factory,
+            symbol,
+            settings.ma25_symbol_cooldown_hours,
+        ):
+            log.info("%s: Type G suppressed by 24h per-symbol cooldown", symbol)
+            return CycleResult(
+                symbol=symbol,
+                accepted=False,
+                reason="g_symbol_cooldown",
                 candidate=signal,
             )
 
