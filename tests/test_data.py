@@ -123,21 +123,94 @@ class TestIndicators:
 # ---------- BinanceClient ----------
 
 class TestBinanceClient:
-    def test_fetch_ohlcv_returns_dataframe_and_caches(
+    def test_fetch_ohlcv_cold_start_does_full_fetch(
         self, client: BinanceClient, mock_exchange, session_factory
     ):
+        """First call (empty cache) fetches the full window."""
         mock_exchange.fetch_ohlcv.return_value = _recent_ohlcv(50)
         df = client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
         assert list(df.columns) == ["open", "high", "low", "close", "volume"]
         assert len(df) == 50
         assert df.index.tz is not None
         mock_exchange.fetch_ohlcv.assert_called_once()
+        # Cold start uses the full `limit` (50). Argument inspection tolerates
+        # ccxt's positional vs keyword variation across versions.
+        call = mock_exchange.fetch_ohlcv.call_args
+        assert (call.args and call.args[-1] == 50) or call.kwargs.get("limit") == 50
 
-        # Second call within the candle period should serve from cache.
+    def test_fetch_ohlcv_warm_cache_only_refetches_tail(
+        self, client: BinanceClient, mock_exchange, session_factory
+    ):
+        """Once the cache is warm, subsequent calls only refetch the last 2
+        bars, not the full window. This keeps the running bar fresh while
+        capping REST weight at 1 per call."""
+        mock_exchange.fetch_ohlcv.return_value = _recent_ohlcv(50)
+        client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+        assert mock_exchange.fetch_ohlcv.call_count == 1
+
+        # Second call: the response now only needs to cover the tail.
+        mock_exchange.fetch_ohlcv.return_value = _recent_ohlcv(2)
         df2 = client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
         assert len(df2) == 50
-        # Still only one remote hit total.
-        assert mock_exchange.fetch_ohlcv.call_count == 1
+        assert mock_exchange.fetch_ohlcv.call_count == 2
+        # Tail call must request only 2 bars.
+        tail_call = mock_exchange.fetch_ohlcv.call_args
+        assert (tail_call.args and tail_call.args[-1] == 2) or tail_call.kwargs.get("limit") == 2
+
+    def test_fetch_ohlcv_force_refresh_skips_cache(
+        self, client: BinanceClient, mock_exchange, session_factory
+    ):
+        """force_refresh=True triggers a full fetch even when the cache is warm."""
+        mock_exchange.fetch_ohlcv.return_value = _recent_ohlcv(50)
+        client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+
+        client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50, force_refresh=True)
+        # Both calls hit the remote with the FULL `limit`, not just 2.
+        assert mock_exchange.fetch_ohlcv.call_count == 2
+        full_call = mock_exchange.fetch_ohlcv.call_args
+        assert (full_call.args and full_call.args[-1] == 50) or full_call.kwargs.get("limit") == 50
+
+    def test_fetch_ohlcv_tail_failure_falls_back_to_cache(
+        self, client: BinanceClient, mock_exchange, session_factory
+    ):
+        """If the tail fetch raises, the cached frame is returned so the cycle
+        does not stall. The previous closed bar may be slightly stale but the
+        bot keeps running."""
+        mock_exchange.fetch_ohlcv.return_value = _recent_ohlcv(50)
+        client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+
+        mock_exchange.fetch_ohlcv.side_effect = RuntimeError("network glitch")
+        df_fallback = client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+        assert len(df_fallback) == 50  # cache served as a backstop
+
+    def test_fetch_ohlcv_tail_overlap_is_replaced_not_duplicated(
+        self, client: BinanceClient, mock_exchange, session_factory
+    ):
+        """The tail bars overlap with the cache by definition. The merged frame
+        must contain each timestamp exactly once, with the FRESH values
+        winning on the overlap (so a stale running close cannot leak through)."""
+        # Seed cache with deterministic values.
+        seed = _recent_ohlcv(50)
+        mock_exchange.fetch_ohlcv.return_value = seed
+        client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+
+        # Fresh tail: same timestamps as the last 2 cached rows but DIFFERENT
+        # OHLC. After merge, the cache values for those two bars must be
+        # overwritten with the fresh values.
+        last_two_ts = [seed[-2][0], seed[-1][0]]
+        fresh_tail = [
+            [last_two_ts[0], 1.0, 2.0, 0.5, 1.5, 1.0],
+            [last_two_ts[1], 1.5, 3.0, 1.0, 2.5, 1.0],
+        ]
+        mock_exchange.fetch_ohlcv.return_value = fresh_tail
+
+        df_merged = client.fetch_ohlcv("BTC/USDT:USDT", "1m", limit=50)
+        assert len(df_merged) == 50
+        # No duplicate timestamps.
+        assert df_merged.index.is_unique
+        # Last bar carries the FRESH close, not the seeded one.
+        assert df_merged["close"].iloc[-1] == 2.5
+        assert df_merged["close"].iloc[-2] == 1.5
 
     def test_fetch_funding_rate_passes_through(self, client: BinanceClient, mock_exchange):
         mock_exchange.fetch_funding_rate.return_value = {
