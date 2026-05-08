@@ -25,6 +25,7 @@ from src.data.indicators import atr14, ema, macd, rsi14, swing_high_low
 from src.signal.bos_short import detect_bos_short
 from src.signal.ma25_bounce import detect_ma25_bounce
 from src.signal.ma25_breakdown import detect_ma25_breakdown
+from src.signal.self_trend import compute_self_trend
 from src.signal.types import CandidateSignal
 
 log = logging.getLogger(__name__)
@@ -232,12 +233,22 @@ class SignalEngine:
                 vol_ratio=vol_ratio,
             )
             if strength >= 0.25:
-                log.info("%s: Type A LONG strength=%.2f", symbol, strength)
+                self_trend = (
+                    settings.a_self_trend_override_enabled
+                    and compute_self_trend(
+                        df_15m, "long", int(settings.a_self_trend_bars)
+                    )
+                )
+                log.info(
+                    "%s: Type A LONG strength=%.2f self_trend=%s",
+                    symbol, strength, self_trend,
+                )
                 return CandidateSignal(
                     timestamp=now, symbol=symbol, side="long",
                     entry_type="A", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
                     swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+                    self_trend_override=self_trend,
                 )
 
         if bearish and near_ema50 and rsi_down:
@@ -247,12 +258,22 @@ class SignalEngine:
                 vol_ratio=vol_ratio,
             )
             if strength >= 0.25:
-                log.info("%s: Type A SHORT strength=%.2f", symbol, strength)
+                self_trend = (
+                    settings.a_self_trend_override_enabled
+                    and compute_self_trend(
+                        df_15m, "short", int(settings.a_self_trend_bars)
+                    )
+                )
+                log.info(
+                    "%s: Type A SHORT strength=%.2f self_trend=%s",
+                    symbol, strength, self_trend,
+                )
                 return CandidateSignal(
                     timestamp=now, symbol=symbol, side="short",
                     entry_type="A", signal_strength=strength,
                     entry_price_ref=close_4h, atr_14=atr_val,
                     swing_high_1h=sh_ref, swing_low_1h=sl_ref, atr_14_1h=atr_1h_val,
+                    self_trend_override=self_trend,
                 )
 
         # ════════════════════════════════════════════════════════════════════

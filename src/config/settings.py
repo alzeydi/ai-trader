@@ -267,6 +267,25 @@ class Settings(BaseSettings):
     # disagreement — it's the leading indicator).
     btc_regime_price_dist_threshold_pct: float = 0.5
 
+    # ----- BTC regime "self-trend" override for Type A -----
+    # Hypothesis: when a symbol is moving on its own (decoupled from BTC),
+    # the BTC-regime hard gate over-blocks. Specifically: a Type A LONG on
+    # an alt that just printed N green 30m candles in a row is much more
+    # likely to be a genuine independent uptrend than a BTC-correlated
+    # bounce that will get dumped at the next BTC tick. Mirror logic for
+    # SHORT (N red 30m candles).
+    #
+    # The override applies ONLY to Type A (A long under BTC=down, A short
+    # under BTC=up). Other entry types keep the standard BTC regime gate.
+    # Decisions where the override fires are logged so we can measure WR
+    # of override-permitted A trades vs the population.
+    a_self_trend_override_enabled: bool = True
+    # Number of consecutive 30m candles that must be in-trend (close > open
+    # for long, close < open for short). 5 bars = 2.5 hours of own move.
+    # 30m candles are aggregated client-side from the existing 15m fetch,
+    # so this costs zero additional REST calls.
+    a_self_trend_bars: int = 5
+
     # ----- Signal engine -----
     timeframe_trend: str = "4h"
     timeframe_structure: str = "1h"
