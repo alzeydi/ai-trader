@@ -280,14 +280,53 @@ def _render_btc_regime_banner() -> None:
     )
     c3.metric("Gate verdict", allowed, f"{blocked} · trigger: {trigger}",
               delta_color="off")
-    # Raw values the gate actually computed.
-    st.caption(
-        f"diag: price_now={snap['price_now']:,.2f}  ema_now={snap['ema_now']:,.2f}  "
-        f"ema_{lookback}h_ago={snap['ema_past']:,.2f}  slope={slope:+.4f}%  "
-        f"price_dist={price_dist:+.4f}%  | slope_signal={snap['slope_signal']}  "
-        f"price_signal={snap['price_signal']}  | period=EMA{period}  "
-        f"lookback={lookback}h  endpoint={snap['endpoint']}"
-    )
+
+    # Простое объяснение по-русски — что увидел гейт и почему такой вердикт.
+    price_now = snap["price_now"]
+    ema_now = snap["ema_now"]
+    abs_price = abs(price_dist)
+    abs_slope = abs(slope)
+
+    if regime == "flat":
+        msg = (
+            f"**Explanation.** BTC сейчас {price_now:,.0f}, EMA{period} ≈ {ema_now:,.0f}. "
+            f"Цена {'выше' if price_dist >= 0 else 'ниже'} EMA на "
+            f"{abs_price:.2f}% (порог ±{price_thr:.2f}%), EMA сдвинулась на "
+            f"{slope:+.2f}% за {lookback}ч (порог ±{slope_thr:.2f}%). "
+            "Ни один сигнал не пробил порог — считаем рынок боковым, "
+            "разрешены обе стороны."
+        )
+    else:
+        direction_word = "растёт" if regime == "up" else "падает"
+        side_word = "лонги" if regime == "up" else "шорты"
+        if snap["price_signal"] == regime and snap["slope_signal"] == regime:
+            msg = (
+                f"**Explanation.** BTC уверенно {direction_word}: цена "
+                f"{price_now:,.0f} {'выше' if price_dist >= 0 else 'ниже'} "
+                f"EMA{period} ({ema_now:,.0f}) на {abs_price:.2f}% (порог "
+                f"±{price_thr:.2f}%), и сама EMA сдвинулась на {slope:+.2f}% "
+                f"за {lookback}ч (порог ±{slope_thr:.2f}%). Открываем только "
+                f"{side_word}."
+            )
+        elif snap["price_signal"] == regime:
+            msg = (
+                f"**Explanation.** Цена BTC ({price_now:,.0f}) "
+                f"{'выше' if price_dist >= 0 else 'ниже'} EMA{period} "
+                f"({ema_now:,.0f}) на {abs_price:.2f}% — это больше порога "
+                f"±{price_thr:.2f}%. EMA пока не успела (наклон всего "
+                f"{slope:+.2f}% за {lookback}ч), но цена уже ушла — значит "
+                f"BTC {direction_word}. Открываем только {side_word}."
+            )
+        else:  # slope-only
+            msg = (
+                f"**Explanation.** EMA{period} на BTC сдвинулась на "
+                f"{slope:+.2f}% за {lookback}ч — больше порога "
+                f"±{slope_thr:.2f}%. Цена пока близко к EMA "
+                f"({abs_price:.2f}%, порог ±{price_thr:.2f}%), но тренд по "
+                f"наклону — {direction_word}. Открываем только {side_word}."
+            )
+
+    st.markdown(msg)
 
 
 def page_overview() -> None:
