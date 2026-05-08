@@ -402,7 +402,19 @@ class OrderExecutor:
         # this symbol, so any reduce-only order still on the book is an
         # orphan from a prior position. Wipe everything via bulk cancel so
         # a brand-new position can't inherit a stale SL/TP.
-        cancel_symbol_conditionals(ex, order.symbol)
+        sweep_rc = cancel_symbol_conditionals(ex, order.symbol)
+        if sweep_rc < 0:
+            # Status unknown — both bulk-cancel and the verifying fetch failed.
+            # We cannot prove the book is clean, so a fresh position would
+            # risk inheriting an orphan SL/TP from a prior trade. Soft-skip
+            # this cycle; the next one will retry the sweep.
+            log.warning(
+                "skip open %s: pre-open sweep status unknown, retry next cycle",
+                order.symbol,
+            )
+            return ExecutionResult(
+                success=False, paper=False, reason="pre_open_sweep_unknown"
+            )
 
         # Pre-flight margin check: sizing already caps notional by free
         # margin, but the wallet can have moved (other open positions, fees)
@@ -561,7 +573,13 @@ class OrderExecutor:
         # alongside the new one (observed: 4 reduce-only orders on ZECUSDT).
         keep_ids = tuple(oid for oid in (sl_id, tp_id) if oid)
         try:
-            cancel_symbol_conditionals(ex, order.symbol, keep_ids=keep_ids)
+            post_rc = cancel_symbol_conditionals(ex, order.symbol, keep_ids=keep_ids)
+            if post_rc < 0:
+                log.warning(
+                    "post-open sweep status unknown for %s — orphan SL/TP "
+                    "may persist alongside the new bracket",
+                    order.symbol,
+                )
         except Exception as exc:  # noqa: BLE001
             log.warning("post-open sweep failed for %s: %s", order.symbol, exc)
 
@@ -670,7 +688,13 @@ class OrderExecutor:
         # and survives transient fetch failures, so ghosts can't accumulate
         # across closes (the previous per-id sweep silently no-op'd whenever
         # fetch_open_orders failed, leaving stacks of stale SLs behind).
-        cancel_symbol_conditionals(ex, symbol)
+        close_rc = cancel_symbol_conditionals(ex, symbol)
+        if close_rc < 0:
+            log.warning(
+                "close-sweep status unknown for %s — orphan SL/TP may "
+                "remain on the book; next pre-open sweep will retry",
+                symbol,
+            )
 
         if reason == "sl_or_tp_hit":
             # SL/TP path is finished — nothing else to do; PnL is recorded below.
@@ -833,9 +857,15 @@ class OrderExecutor:
             # trail SL (new_oid) as a two-layer backstop. Cancel only the
             # previous trail SL and any other stale STOP orders.
             keep_ids = tuple(oid for oid in (new_oid, original_stop_oid) if oid)
-            cancel_symbol_conditionals(
+            trail_rc = cancel_symbol_conditionals(
                 ex, symbol, keep_ids=keep_ids, only_stop=True
             )
+            if trail_rc < 0:
+                log.warning(
+                    "trail-sweep status unknown for %s — previous trail SL "
+                    "may still be live alongside the new one",
+                    symbol,
+                )
             new_stop = new_stop_priced
 
         with self.session_factory() as s:

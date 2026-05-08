@@ -521,6 +521,41 @@ def test_live_open_sl_tp_use_actual_filled_qty(monkeypatch):
     assert open_trades[0].quantity == actual_filled
 
 
+def test_live_open_aborts_when_pre_open_sweep_status_unknown(monkeypatch):
+    """If cancel_symbol_conditionals can't verify the book is clean (returns
+    -1), opening a fresh position would risk inheriting an orphan SL/TP from
+    the previous trade. The executor must soft-skip this cycle.
+    """
+    sf = make_session_factory()
+    create_order_calls: list[dict] = []
+
+    def fake_create_order(symbol, otype, side, qty, price, params):
+        create_order_calls.append({"type": otype})
+        return {"id": "x"}
+
+    ex = MagicMock()
+    ex.create_order.side_effect = fake_create_order
+    ex.set_leverage.return_value = None
+    ex.fetch_balance.return_value = {"USDT": {"free": 1_000_000.0}}
+
+    client = MagicMock()
+    client.exchange = ex
+
+    monkeypatch.setattr(
+        "src.execution.orders.cancel_symbol_conditionals",
+        lambda *a, **kw: -1,
+    )
+
+    executor = OrderExecutor(client=client, paper=False, session_factory=sf)
+    result = executor.open_position(_order())
+
+    assert result.success is False
+    assert result.reason == "pre_open_sweep_unknown"
+    # Critically: no entry was placed.
+    assert create_order_calls == []
+    assert count_open_trades(sf) == 0
+
+
 def test_live_open_rollback_on_sl_failure_uses_actual_filled_qty(monkeypatch):
     """If SL placement fails after a partial fill, rollback must close the
     actual filled qty (reduceOnly), not the planned qty.

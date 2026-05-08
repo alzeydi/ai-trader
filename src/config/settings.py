@@ -318,6 +318,14 @@ class Settings(BaseSettings):
     dry_run: bool = True
     paper_trading: bool = True
 
+    # Live + non-testnet startup with safety gates effectively disabled
+    # (e.g. railway.toml's "statistics collection" preset:
+    # MAX_DAILY_LOSS_PCT=100, SAFETY_MAX_CONSECUTIVE_LOSSES=10000) is a
+    # configuration that can drain a real account in one bad day. Booting
+    # in that state requires this explicit ack so a typo or a forgotten
+    # env override can't silently land on production.
+    allow_unsafe_live: bool = False
+
     # ----- Derived helpers -----
     @property
     def project_root(self) -> Path:

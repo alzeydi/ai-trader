@@ -85,6 +85,10 @@ B_LOSS_COOLDOWN_HOURS = "6"
 SAFETY_MAX_CONSECUTIVE_LOSSES = "10000"
 SAFETY_PAUSE_HOURS = "0"
 
+# Explicit ack: this preset disables every safety gate by design (statistics
+# collection on a real account). main.py refuses to start without this.
+ALLOW_UNSAFE_LIVE = "true"
+
 # ----- Signal engine -----
 TIMEFRAME_TREND = "4h"
 TIMEFRAME_STRUCTURE = "1h"

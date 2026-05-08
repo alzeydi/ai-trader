@@ -404,8 +404,51 @@ def _load_symbols() -> list[str]:
     ]
 
 
+def _enforce_live_safety_gates() -> None:
+    """Block startup when running live on mainnet with safety gates disabled.
+
+    Real-money runs MUST keep at least one of: testnet, paper, dry-run, or a
+    sane risk-cap configuration. railway.toml ships a "statistics collection"
+    preset that opens every gate (MAX_DAILY_LOSS_PCT=100,
+    SAFETY_MAX_CONSECUTIVE_LOSSES=10000, MAX_OPEN_POSITIONS=12) — booting
+    against that combination on mainnet without the explicit
+    ALLOW_UNSAFE_LIVE=true ack is almost always a misconfiguration.
+    """
+    is_live = settings.trading_mode == "live"
+    is_mainnet = not settings.binance_testnet
+    is_real = not settings.paper_trading and not settings.dry_run
+    if not (is_live and is_mainnet and is_real):
+        return
+    # Heuristics: any one of these means the relevant safety gate is off.
+    gates_disabled = (
+        settings.max_daily_loss_pct >= 50.0
+        or settings.safety_max_consecutive_losses >= 100
+        or settings.max_open_positions >= 50
+    )
+    if not gates_disabled:
+        return
+    if settings.allow_unsafe_live:
+        logging.getLogger("main").warning(
+            "ALLOW_UNSAFE_LIVE=true: starting live mainnet run with relaxed "
+            "safety gates (max_daily_loss_pct=%.1f, "
+            "safety_max_consecutive_losses=%d, max_open_positions=%d)",
+            settings.max_daily_loss_pct,
+            settings.safety_max_consecutive_losses,
+            settings.max_open_positions,
+        )
+        return
+    raise RuntimeError(
+        "Refusing to start: live mainnet with safety gates disabled "
+        f"(max_daily_loss_pct={settings.max_daily_loss_pct}, "
+        f"safety_max_consecutive_losses={settings.safety_max_consecutive_losses}, "
+        f"max_open_positions={settings.max_open_positions}). "
+        "Set ALLOW_UNSAFE_LIVE=true to override, or restore conservative caps."
+    )
+
+
 def main() -> None:
     _configure_logging()
+    _enforce_live_safety_gates()
     log = logging.getLogger("main")
     log.info(
         "starting ai-trader (mode=%s, paper=%s, testnet=%s)",
