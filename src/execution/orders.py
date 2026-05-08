@@ -506,7 +506,7 @@ class OrderExecutor:
         sl_params: dict[str, Any] = {"stopPrice": sl_price, "reduceOnly": True}
         try:
             sl_resp = ex.create_order(
-                order.symbol, "STOP_MARKET", exit_side, order.quantity, None, sl_params
+                order.symbol, "STOP_MARKET", exit_side, actual_qty, None, sl_params
             )
         except Exception as sl_exc:  # noqa: BLE001
             log.error(
@@ -516,7 +516,7 @@ class OrderExecutor:
             )
             try:
                 ex.create_order(
-                    order.symbol, "market", exit_side, order.quantity,
+                    order.symbol, "market", exit_side, actual_qty,
                     None, {"reduceOnly": True},
                 )
                 log.info("rollback OK: %s position closed", order.symbol)
@@ -543,7 +543,7 @@ class OrderExecutor:
         tp_params: dict[str, Any] = {"stopPrice": tp_price, "reduceOnly": True}
         try:
             tp_resp = ex.create_order(
-                order.symbol, "TAKE_PROFIT_MARKET", exit_side, order.quantity,
+                order.symbol, "TAKE_PROFIT_MARKET", exit_side, actual_qty,
                 None, tp_params,
             )
             tp_id = str(tp_resp.get("id") or "")
