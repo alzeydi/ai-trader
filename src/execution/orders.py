@@ -708,6 +708,39 @@ class OrderExecutor:
 
         exit_oids = tuple(str(o) for o in (stop_oid, take_oid, trail_oid) if o)
         exit_fills, entry_fills = self._split_fills(my_trades, entry_oid, exit_oids)
+
+        # Robustness fallback. Binance migrated conditional orders to the
+        # algo endpoint on 2025-12-09; their userTrades responses no longer
+        # reliably carry `reduceOnly`, and the algo-order id surfaces as
+        # `algoOrderId` rather than `orderId`. When neither the reduceOnly
+        # flag nor the cached SL/TP/trail oids match, the primary
+        # partitioner classes the SL/TP fill as an "entry" leftover and
+        # `vwap_exit` falls to 0 — which then makes the caller fall back
+        # on `_mark_price`, recording the current mark as the close price
+        # instead of the actual fill VWAP. Observed 2026-05-08 on QNT #200:
+        # SL/TP triggered at fill VWAP 73.05 but close_price was recorded
+        # as 72.59 (mark at the moment the bot noticed the closure). PnL
+        # sign was inverted as a result.
+        #
+        # Fallback uses position direction: for a long, the exit fills are
+        # `sell`s; for a short, they are `buy`s. Safe because the engine
+        # enforces a per-symbol cooldown so concurrent positions on the
+        # same symbol cannot exist within a single `since=opened_at_ms`
+        # window.
+        if not exit_fills and my_trades:
+            desired_exit_side = "sell" if side == "long" else "buy"
+            rebuilt_exits, rebuilt_entries = self._partition_by_side(
+                my_trades, desired_exit_side
+            )
+            if rebuilt_exits:
+                log.info(
+                    "close_position %s: side-based fallback identified "
+                    "%d exit fill(s) (oid/reduceOnly path failed)",
+                    symbol, len(rebuilt_exits),
+                )
+                exit_fills = rebuilt_exits
+                entry_fills = rebuilt_entries
+
         vwap_exit = self._vwap(exit_fills)
         fee_exit = self._sum_fee_usdt(exit_fills)
         fee_entry = self._sum_fee_usdt(entry_fills)
@@ -897,6 +930,35 @@ class OrderExecutor:
             if entry_order_id and oid == str(entry_order_id):
                 entries.append(t)
             elif not entry_order_id:
+                entries.append(t)
+        return exits, entries
+
+    @staticmethod
+    def _partition_by_side(
+        trades: list[dict[str, Any]],
+        exit_side: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Split trades into (exits, entries) based on side direction only.
+
+        Used as a fallback when reduceOnly/oid signals are unreliable —
+        Binance's algo-order migration (2025-12-09) drops both for SL/TP
+        fills surfaced via fetchMyTrades.
+
+        `exit_side` is the side that closes the position: 'sell' for long,
+        'buy' for short. Trades whose `side` matches exit_side are
+        classified as exits; trades on the opposite side are classified as
+        entries; trades without a `side` field are dropped (safer than
+        mis-classifying).
+        """
+        exits: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        exit_side = exit_side.lower()
+        entry_side = "buy" if exit_side == "sell" else "sell"
+        for t in trades:
+            t_side = (t.get("side") or "").lower()
+            if t_side == exit_side:
+                exits.append(t)
+            elif t_side == entry_side:
                 entries.append(t)
         return exits, entries
 
