@@ -92,18 +92,6 @@ class Settings(BaseSettings):
     breakeven_activate_pct: float = 0.010   # 1.0 % of notional
     breakeven_lock_pct: float = 0.0075      # 0.75 % of notional
     trail_distance_pct: float = 0.00675     # 0.675 % of notional (was 0.9 %, −25 %)
-    # Break-even protection: pre-trail guard for positions that have shown a
-    # profit peak but haven't yet armed the full trail.
-    #
-    # Lifecycle (phase 0.5):
-    #   Once unrealised NET profit HWM reaches `be_protect_arm_pct`, ANY tick
-    #   where the position starts retracing (current net < HWM) causes the SL
-    #   to be moved to a price that locks in `be_protect_lock_pct` net profit.
-    #   Fires only once per trade (the tighter-stop check prevents re-firing).
-    #   After firing, the regular trail takes over if price recovers to
-    #   `breakeven_activate_pct`.
-    be_protect_arm_pct: float = 0.005    # 0.5 % of notional — arm threshold
-    be_protect_lock_pct: float = 0.005   # 0.5 % of notional locked at BE-stop
     # ----- Type B counter-trend gates -----
     # Type B fires on extreme 4h RSI + 15m reversal. Without a 1h trend
     # filter it keeps fading every minor pullback on a strongly trending
