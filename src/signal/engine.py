@@ -38,6 +38,18 @@ _MIN_15M = 35   # need ATR14 + MACD warmup + volume window
 # ── composite scorers ──────────────────────────────────────────────────────
 
 def _score_a(ema_gap_pct: float, rsi_delta: float, vol_ratio: float) -> float:
+    """Score Type A trend-pullback candidates.
+
+    Constants saturate each component at its "strong enough" threshold:
+        ema_gap_pct / 0.08 — 8 % gap between EMA50/EMA200 caps the trend
+            component (typical strong-trend ranges on 4h crypto majors).
+        rsi_delta / 8.0    — an 8-point RSI swing on 1h is a confident
+            pullback-then-resume signature in our backtests.
+        (vol_ratio - 1) / 1.0 — 2× the 20-bar mean volume saturates the
+            confirmation component.
+    Weights 0.40 / 0.35 / 0.25 were fitted on the 2024 universe; if you
+    re-fit, keep the sum at 1.0 so the cap below stays meaningful.
+    """
     trend   = min(abs(ema_gap_pct) / 0.08, 1.0) * 0.40
     rev     = min(abs(rsi_delta)   / 8.0,  1.0) * 0.35
     volume  = min(max(vol_ratio - 1.0, 0.0) / 1.0, 1.0) * 0.25
@@ -48,12 +60,26 @@ def _score_a(ema_gap_pct: float, rsi_delta: float, vol_ratio: float) -> float:
 
 
 def _score_b(rsi_4h: float, side: str, hist_delta: float) -> float:
+    """Score Type B mean-reversion candidates.
+
+    75 / 25 are the canonical RSI overbought / oversold thresholds; the
+    excess past the threshold is normalised by the remaining 25 points so
+    a fully-pegged RSI (100 / 0) saturates the component. hist_delta is
+    the MACD-histogram slope on 15m: 0.01 saturates at "clear reversal"
+    based on observed turn magnitudes in the 2024 sample.
+    """
     excess   = (rsi_4h - 75) / 25.0 if side == "short" else (25 - rsi_4h) / 25.0
     reversal = min(abs(hist_delta) / 0.01, 1.0) * 0.50
     return round(min(0.50 * min(excess, 1.0) + reversal, 0.99), 2)
 
 
 def _score_c(proximity: float, rsi_delta: float) -> float:
+    """Score Type C range-bounce candidates.
+
+    50 / 50 weighting between range-edge proximity and RSI swing magnitude;
+    rsi_delta is normalised by 8 points (same scale as Type A — an 8-point
+    1h RSI move is the empirical "confident reversal" boundary).
+    """
     return round(min(0.50 * proximity + 0.50 * min(abs(rsi_delta) / 8.0, 1.0), 0.99), 2)
 
 
