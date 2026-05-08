@@ -206,12 +206,25 @@ class Settings(BaseSettings):
     # than 3 % below MA25 indicate a flash-crash / liquidation cascade, not
     # a measured pullback; they have different follow-through statistics.
     ma25_touch_min_pct: float = 0.03
-    # Per-symbol cooldown after any Type-E candidate fires. Strategy E scans
-    # the in-progress H4 bar every loop tick (default 60 s); without a dedup
-    # window the same symbol would re-trigger every cycle for the rest of the
-    # 4h bar. Spec §5: "symbol fires at 04:34 → cooldown starts → 24h silence
-    # for THIS symbol regardless of how its forming bar evolves".
-    ma25_symbol_cooldown_hours: int = 24
+    # Per-symbol cooldown after any Type-E or Type-G candidate fires. The
+    # H4-bar-based detectors re-evaluate the in-progress bar every loop tick
+    # (default 60 s); a non-zero cooldown prevents the same setup from
+    # re-firing for the rest of the 4h bar.
+    #
+    # Set to 0 (disabled) per 2026-05-08 paper-run review: in markets where
+    # the cooldown was binding (regime-induced pause + LLM SKIPs counted by
+    # ai_decisions table), it was suppressing 80%+ of valid Type E
+    # opportunities even when no actual trade had been opened. Without
+    # cooldown, dedup falls back on:
+    #   • llm_veto_cooldown_sec (1800 s) — caches veto verdicts per
+    #     (symbol, side, entry_type), so the same setup is not re-priced
+    #     against the LLM every cycle even though it now reaches the
+    #     veto layer;
+    #   • the 4h bar boundary itself — once the bar closes the setup is
+    #     re-evaluated against the new bar's data, so we cannot enter the
+    #     same closed-bar setup twice in any case.
+    # Re-enable (set 24) if intra-bar re-firing becomes a problem in live.
+    ma25_symbol_cooldown_hours: int = 0
 
     # ----- MA25 Breakdown (Strategy G — mirror of E) -----
     # Bearish twin of E: MA25 falling (slope ≤ −0.5 %), MA25 < MA99,
