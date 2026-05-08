@@ -292,58 +292,10 @@ class PositionMonitor:
         activate_usd = notional * float(settings.breakeven_activate_pct)
         lock_usd = notional * float(settings.breakeven_lock_pct)
         distance_usd = notional * float(settings.trail_distance_pct)
-        be_arm_usd = notional * float(settings.be_protect_arm_pct)
-        be_lock_usd = notional * float(settings.be_protect_lock_pct)
 
         prev_hwm = float(trade.trail_high_water) if trade.trail_high_water is not None else 0.0
         hwm_profit = max(prev_hwm, net_profit)
         was_armed = bool(trade.trail_armed)
-
-        # ── Pre-arm HWM tracking ──────────────────────────────────────────
-        # Persist peak net profit before the main trail activates so
-        # be_protect can see how high the position reached. trail_armed stays
-        # False until the full breakeven_activate_pct threshold is hit.
-        if not was_armed and net_profit > 0 and hwm_profit > prev_hwm:
-            with self.session_factory() as s:
-                row = s.get(Trade, trade.id)
-                if row is not None:
-                    row.trail_high_water = float(hwm_profit)
-                    s.commit()
-
-        # ── BE-protect (phase 0.5) ────────────────────────────────────────
-        # Once HWM ≥ be_protect_arm_pct of notional AND the position starts
-        # retracing (current < HWM), move SL to lock in be_protect_lock_pct
-        # net profit. Fires only once: subsequent ticks find the new stop
-        # already tighter and skip. The regular trail takes over if price
-        # recovers to breakeven_activate_pct.
-        if not was_armed and hwm_profit >= be_arm_usd and net_profit < hwm_profit:
-            if side == "long":
-                be_stop = (be_lock_usd / qty + entry * (1.0 + fee_pct)) / (1.0 - fee_pct)
-            else:
-                be_stop = (entry * (1.0 - fee_pct) - be_lock_usd / qty) / (1.0 + fee_pct)
-            try:
-                price_str = self.client.exchange.price_to_precision(trade.symbol, be_stop)
-                be_stop = float(price_str)
-            except Exception:  # noqa: BLE001
-                pass
-            be_tighter = (
-                (side == "long" and be_stop > float(trade.stop))
-                or (side == "short" and be_stop < float(trade.stop))
-            )
-            if be_tighter and self.executor.replace_stop(trade.id, be_stop):
-                log.info(
-                    "be_protect: SL → %.6f for %s (hwm_net=%.2f cur_net=%.2f)",
-                    be_stop, trade.symbol, hwm_profit, net_profit,
-                )
-                if self.notifier is not None:
-                    try:
-                        self.notifier.send(
-                            f"🛡 *BE PROTECT* `{trade.symbol}` {side.upper()}\n"
-                            f"SL → `{be_stop:.6f}`\n"
-                            f"Locked: `${be_lock_usd:.2f}` net"
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.debug("be_protect notify failed: %s", exc)
 
         if net_profit < activate_usd:
             return
