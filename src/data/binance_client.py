@@ -3,15 +3,19 @@
 - Honors `BINANCE_TESTNET` flag.
 - Built-in ccxt rate limiting (`enableRateLimit=True`).
 - Tenacity-based retry (3 attempts, exponential backoff) on network errors.
-- OHLCV candles are cached in SQLite (`src.persistence.db.OhlcvCandle`) so
-  repeated calls within a candle window don't hit the REST endpoint.
+- OHLCV candles use a two-layer cache: closed historical bars come from the
+  SQLite cache (`src.persistence.db.OhlcvCandle`); the last 2 bars (the most
+  recent closed bar + the in-progress running bar) are ALWAYS fetched fresh
+  on every call. Without this, the in-progress bar can stay stale for up to
+  one timeframe period (4h on H4 candles), causing detectors to fire on
+  outdated data while the actual market has moved.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 
 import ccxt
@@ -33,6 +37,12 @@ from src.persistence.db import (
 
 log = logging.getLogger(__name__)
 
+# Number of trailing bars we always refresh from the exchange. Two bars
+# covers (last closed bar, currently-forming bar) — the running bar is the
+# critical one for signal correctness; the previous closed bar is included
+# so a bar boundary crossed between calls is also captured cleanly.
+_FRESH_TAIL_BARS = 2
+
 # Network-class errors that are worth retrying. Exchange-class errors
 # (e.g. InsufficientFunds, BadSymbol) are not — let them propagate.
 NETWORK_ERRORS: tuple[type[Exception], ...] = (
@@ -48,13 +58,6 @@ _retry = retry(
     wait=wait_exponential(multiplier=1, min=1, max=8),
     retry=retry_if_exception_type(NETWORK_ERRORS),
 )
-
-
-def _timeframe_seconds(timeframe: str) -> int:
-    """Convert ccxt timeframe ('1m','5m','1h','4h','1d') to seconds."""
-    unit = timeframe[-1]
-    n = int(timeframe[:-1])
-    return n * {"m": 60, "h": 3600, "d": 86400, "w": 604800}[unit]
 
 
 @dataclass
@@ -113,19 +116,69 @@ class BinanceClient:
     ) -> pd.DataFrame:
         """Return at most `limit` recent candles, indexed by UTC timestamp.
 
-        Cache strategy: if the cache holds enough rows and the latest one is
-        younger than one timeframe period, the cache is returned directly.
-        Otherwise we fetch from Binance, upsert into the cache, and return the
-        merged result.
+        Two-layer strategy:
+
+        - HOT PATH (cache fully warm). The historical bars (everything except
+          the last `_FRESH_TAIL_BARS`) come from SQLite. The last 2 bars are
+          ALWAYS fetched fresh, so the in-progress running bar reflects the
+          true running close on every call. Cost: 1 weight per request
+          (`limit=2` is in the lowest fapi-klines tier).
+        - COLD PATH. If the cache has fewer than `limit` bars or
+          `force_refresh=True`, do a full `limit`-bar fetch. Used on cold
+          start, after a long downtime, and by the backtest harness.
+
+        The previous strategy returned the cache verbatim while the latest
+        cached row was younger than one timeframe period. For 4h that meant a
+        stale running bar could be served for up to 4 hours — detectors saw
+        running close from hours ago while market orders filled at live spot,
+        producing 2-3% gaps between recorded entry and actual fill.
         """
         assert self.session_factory is not None
-        if not force_refresh:
-            cached = read_cached_candles(self.session_factory, symbol, timeframe, limit)
-            if not cached.empty and len(cached) >= limit:
-                age = (datetime.now(tz=timezone.utc) - cached.index[-1]).total_seconds()
-                if age < _timeframe_seconds(timeframe):
-                    return cached
 
+        if force_refresh:
+            return self._fetch_full(symbol, timeframe, limit)
+
+        cached = read_cached_candles(self.session_factory, symbol, timeframe, limit)
+        if cached.empty or len(cached) < limit:
+            return self._fetch_full(symbol, timeframe, limit)
+
+        fresh = self._fetch_tail(symbol, timeframe, _FRESH_TAIL_BARS)
+        if fresh is None:
+            # Network/exchange failure on the tail fetch. The cache is at
+            # least minutes old in the worst case (we just enforced
+            # len >= limit); serving stale is preferable to returning
+            # nothing and stalling the cycle.
+            log.warning(
+                "fetch_ohlcv: %s %s tail-refresh failed, serving cache",
+                symbol, timeframe,
+            )
+            return cached
+        if fresh.empty:
+            # Symbol soft-skipped (-1122 etc.) — treat as no data so engine's
+            # length guard short-circuits the symbol for this cycle.
+            return fresh
+
+        # Replace any cached rows that overlap with the fresh window, then
+        # append fresh and trim to `limit`. fresh.index[0] is the oldest of
+        # the freshly-fetched bars; we drop everything ≥ that timestamp from
+        # the cached frame so the fresh values win on the overlap.
+        keep = cached[cached.index < fresh.index[0]]
+        merged = pd.concat([keep, fresh]).tail(limit)
+
+        try:
+            upsert_candles(self.session_factory, symbol, timeframe, fresh)
+        except Exception as exc:  # noqa: BLE001 — cache failures must not break trading
+            log.warning("ohlcv cache upsert failed for %s %s: %s", symbol, timeframe, exc)
+
+        return merged
+
+    # --- internal fetch helpers ---------------------------------------------
+
+    def _fetch_full(
+        self, symbol: str, timeframe: str, limit: int
+    ) -> pd.DataFrame:
+        """Full-window fetch with cache seed. Used on cold start and
+        force_refresh."""
         try:
             raw = self._fetch_ohlcv_remote(symbol, timeframe, limit)
         except ccxt.BadRequest as exc:
@@ -151,6 +204,38 @@ class BinanceClient:
         except Exception as exc:  # noqa: BLE001 — cache failures must not break trading
             log.warning("ohlcv cache upsert failed for %s %s: %s", symbol, timeframe, exc)
 
+        return df
+
+    def _fetch_tail(
+        self, symbol: str, timeframe: str, count: int
+    ) -> pd.DataFrame | None:
+        """Fetch the last `count` bars only (closed-tail + running).
+
+        Returns:
+          - DataFrame with ≤ count rows on success (may be empty for
+            symbol soft-skip).
+          - None on transient network/exchange errors, signalling the caller
+            to fall back on cached data.
+        """
+        try:
+            raw = self._fetch_ohlcv_remote(symbol, timeframe, count)
+        except ccxt.BadRequest as exc:
+            msg = str(exc)
+            if "-1122" in msg or "Invalid symbol status" in msg:
+                log.warning("fetch_ohlcv: %s %s soft-skipped (%s)",
+                            symbol, timeframe, msg)
+                return pd.DataFrame()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("fetch_ohlcv tail: %s %s remote error: %s",
+                        symbol, timeframe, exc)
+            return None
+
+        df = pd.DataFrame(raw, columns=["ts", "open", "high", "low", "close", "volume"])
+        if df.empty:
+            return df
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+        df.set_index("ts", inplace=True)
         return df
 
     @_retry
